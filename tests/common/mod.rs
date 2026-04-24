@@ -1,0 +1,149 @@
+//! Shared fixtures for integration tests. Each test binary uses a different
+//! subset of these helpers, so silence dead-code warnings per binary.
+#![allow(dead_code)]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use arrow_array::builder::{ListBuilder, StringBuilder};
+use arrow_array::{
+    BinaryArray, BooleanArray, Float64Array, Int32Array, RecordBatch, RecordBatchIterator,
+    StringArray, TimestampMicrosecondArray,
+};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use tempfile::TempDir;
+
+/// Build an arrow schema that exercises the common primitive types plus one list.
+pub fn fixture_schema() -> SchemaRef {
+    let list_field = Field::new_list(
+        "tags",
+        Arc::new(Field::new("item", DataType::Utf8, true)),
+        true,
+    );
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("score", DataType::Float64, true),
+        Field::new("flag", DataType::Boolean, true),
+        Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("data", DataType::Binary, true),
+        list_field,
+    ]))
+}
+
+/// Schema that only contains CSV-safe types.
+pub fn simple_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("score", DataType::Float64, true),
+    ]))
+}
+
+pub fn simple_batch() -> RecordBatch {
+    let ids = Int32Array::from(vec![1, 2, 3, 4, 5]);
+    let names = StringArray::from(vec![
+        Some("alice"),
+        Some("bob"),
+        None,
+        Some("dan"),
+        Some("eve"),
+    ]);
+    let scores = Float64Array::from(vec![
+        Some(10.5),
+        None,
+        Some(f64::NAN),
+        Some(f64::INFINITY),
+        Some(-1.25),
+    ]);
+    RecordBatch::try_new(
+        simple_schema(),
+        vec![Arc::new(ids), Arc::new(names), Arc::new(scores)],
+    )
+    .unwrap()
+}
+
+pub fn full_batch() -> RecordBatch {
+    let ids = Int32Array::from(vec![1, 2, 3]);
+    let names = StringArray::from(vec![Some("alice"), None, Some("carol")]);
+    let scores = Float64Array::from(vec![Some(1.0), Some(2.5), None]);
+    let flags = BooleanArray::from(vec![Some(true), Some(false), None]);
+    let ts = TimestampMicrosecondArray::from(vec![
+        Some(1_700_000_000_000_000),
+        None,
+        Some(1_700_000_001_000_000),
+    ]);
+    let data = BinaryArray::from_opt_vec(vec![Some(b"\x00\xff".as_ref()), None, Some(b"hi")]);
+
+    let mut tags_builder = ListBuilder::new(StringBuilder::new());
+    tags_builder.values().append_value("a");
+    tags_builder.values().append_value("b");
+    tags_builder.append(true);
+    tags_builder.append(false);
+    tags_builder.values().append_value("c");
+    tags_builder.append(true);
+    let tags = tags_builder.finish();
+
+    RecordBatch::try_new(
+        fixture_schema(),
+        vec![
+            Arc::new(ids),
+            Arc::new(names),
+            Arc::new(scores),
+            Arc::new(flags),
+            Arc::new(ts),
+            Arc::new(data),
+            Arc::new(tags),
+        ],
+    )
+    .unwrap()
+}
+
+/// Write a dataset containing `simple_batch()` to a fresh Lance directory inside `tmp`.
+pub async fn write_simple(tmp: &TempDir, name: &str) -> PathBuf {
+    let path = tmp.path().join(name);
+    let batch = simple_batch();
+    let schema = batch.schema();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+    arrs::lance::write_dataset(&path, iter).await.unwrap();
+    path
+}
+
+/// Write the full (all types) dataset.
+pub async fn write_full(tmp: &TempDir, name: &str) -> PathBuf {
+    let path = tmp.path().join(name);
+    let batch = full_batch();
+    let schema = batch.schema();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+    arrs::lance::write_dataset(&path, iter).await.unwrap();
+    path
+}
+
+/// Schema with primitives + one top-level Binary column (no nested types).
+/// Useful for testing --binary-format end-to-end without tripping CSV's
+/// reject-nested-types rule.
+pub fn with_binary_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("data", DataType::Binary, true),
+    ]))
+}
+
+pub fn with_binary_batch() -> RecordBatch {
+    let ids = Int32Array::from(vec![1, 2, 3]);
+    let data = BinaryArray::from_opt_vec(vec![Some(b"\x00\xff".as_ref()), None, Some(b"hi")]);
+    RecordBatch::try_new(with_binary_schema(), vec![Arc::new(ids), Arc::new(data)]).unwrap()
+}
+
+pub async fn write_with_binary(tmp: &TempDir, name: &str) -> PathBuf {
+    let path = tmp.path().join(name);
+    let batch = with_binary_batch();
+    let schema = batch.schema();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+    arrs::lance::write_dataset(&path, iter).await.unwrap();
+    path
+}
+
+pub fn tempdir() -> TempDir {
+    tempfile::tempdir().unwrap()
+}
