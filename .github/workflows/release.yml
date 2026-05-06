@@ -1,0 +1,216 @@
+name: Release
+
+# Triggered by pushing an annotated tag matching `v*` (e.g. v0.1.0,
+# v0.2.0-rc1). Also exposes a `workflow_dispatch` button so a
+# release-engineer can rebuild artifacts for an existing tag without
+# re-pushing it (useful when a runner died mid-matrix).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref / tag to build (e.g. v0.1.0)"
+        required: true
+        type: string
+
+# Cancel a duplicate run targeting the same tag (e.g. tag re-pushed).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────
+  # Linux wheels: native runners (x86_64 + aarch64), Zig as the linker
+  # for a glibc 2.17 floor. `--compatibility manylinux2014` tells maturin
+  # to tag the wheel accordingly and run its built-in auditwheel
+  # validation. No QEMU, no manylinux container.
+  # ──────────────────────────────────────────────────────────────────
+  linux:
+    name: linux · ${{ matrix.target }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64
+            runs-on: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+          - target: aarch64
+            runs-on: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          rust-target: ${{ matrix.rust-target }}
+          cache-key: release-linux-${{ matrix.target }}
+          python: "true"
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: mlugg/setup-zig@v2
+      # Use hardcoded version numbers for now - skipping manually setting version numbers
+      # - name: Sync workspace + pyproject version to tag
+      # run: python3 tools/set_version_from_tag.py "${{ inputs.ref || github.ref }}"
+      - name: Build wheel
+        run: >
+          uvx maturin build --release --zig
+          --target ${{ matrix.rust-target }}
+          --compatibility manylinux2014
+          --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-linux-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────
+  # macOS: x86_64 (Intel) + arm64 (Apple Silicon). The `macos-13`
+  # runner is x86_64, `macos-14` is arm64. Both are native — no
+  # cross-compile needed.
+  # ──────────────────────────────────────────────────────────────────
+  macos:
+    name: macos · ${{ matrix.target }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64
+            runs-on: macos-13
+            rust-target: x86_64-apple-darwin
+          - target: aarch64
+            runs-on: macos-14
+            rust-target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          rust-target: ${{ matrix.rust-target }}
+          cache-key: release-macos-${{ matrix.target }}
+          python: "true"
+          python-version: ${{ env.PYTHON_VERSION }}
+      # Use hardcoded version numbers for now - skipping manually setting version numbers
+      # - name: Sync workspace + pyproject version to tag
+      # run: python3 tools/set_version_from_tag.py "${{ inputs.ref || github.ref }}"
+      - name: Build wheel
+        run: >
+          uvx maturin build --release
+          --target ${{ matrix.rust-target }}
+          --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-macos-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────
+  # Source distribution. Platform-independent, so just spin up the
+  # cheapest runner and let maturin package the source.
+  # ──────────────────────────────────────────────────────────────────
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # Use hardcoded version numbers for now - skipping manually setting version numbers
+      # - name: Sync workspace + pyproject version to tag
+      # run: python3 tools/set_version_from_tag.py "${{ inputs.ref || github.ref }}"
+      - name: Build sdist
+        run: uvx maturin sdist --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────
+  # GitHub Release: attach every wheel + sdist as release assets.
+  # The release is created in `draft` mode by default — release-eng
+  # reviews the artifact list and publishes manually. Skips on a
+  # workflow_dispatch run because that's typically a re-build, not a
+  # re-publish.
+  # ──────────────────────────────────────────────────────────────────
+  github-release:
+    name: github release
+    # Only on real tag pushes — never on workflow_dispatch, even if dispatched
+    # from a tag ref. `event_name == 'push'` excludes the manual-run path.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create draft release with attachments
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
+
+  # ──────────────────────────────────────────────────────────────────
+  # crates.io publish. Disabled by default — uncomment AFTER creating a
+  # `CARGO_REGISTRY_TOKEN` repo secret. Generate at
+  # https://crates.io/settings/tokens with the `publish-update` scope
+  # restricted to the `arrs` crate. Single-crate workspace, so one
+  # `cargo publish` call is enough.
+  # ──────────────────────────────────────────────────────────────────
+  # crates-io:
+  #   name: publish to crates.io
+  #   if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v5
+  #       with:
+  #         ref: ${{ inputs.ref || github.ref }}
+  #     - uses: ./.github/actions/setup-toolchain
+  #       with:
+  #         cache-key: release-crates-io
+  #     - name: Publish
+  #       env:
+  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+  #       run: cargo publish --locked
+
+  # ──────────────────────────────────────────────────────────────────
+  # PyPI publish (trusted publishing). Disabled by default — uncomment
+  # AFTER configuring https://pypi.org/manage/account/publishing/ for
+  # this repo. Trusted publishing requires no API token: PyPI verifies
+  # the OIDC token GitHub mints and matches it against the configured
+  # repo + workflow + environment triple.
+  # ──────────────────────────────────────────────────────────────────
+  # pypi:
+  #   name: publish to PyPI
+  #   needs: verify
+  #   if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  #   runs-on: ubuntu-latest
+  #   environment:
+  #     name: pypi
+  #     url: https://pypi.org/p/rayd
+  #   permissions:
+  #     id-token: write   # OIDC token for trusted publishing
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         path: dist
+  #         merge-multiple: true
+  #     - uses: pypa/gh-action-pypi-publish@release/v1
+  #       with:
+  #         packages-dir: dist
+  #         skip-existing: true
