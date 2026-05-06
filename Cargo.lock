@@ -383,8 +383,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "arrs"
-version = "0.1.1"
+name = "arrs-cli"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "arrow",
