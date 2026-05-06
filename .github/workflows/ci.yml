@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel in-progress runs on the same ref/PR when a new push lands. Saves
+# CI minutes when developers push corrections in quick succession.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Tested target for tests
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────
+  # Rust: formatting + clippy.
+  # ──────────────────────────────────────────────────────────────────
+  rust-fmt-clippy:
+    name: rust · fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # Manually installing protobuf since `arduino/setup-protoc` has no Node 24
+      # release as of 2026-05, which prints a deprecation warning on every job.
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ──────────────────────────────────────────────────────────────────
+  # Rust: workspace test suite.
+  # ──────────────────────────────────────────────────────────────────
+  rust-test:
+    name: rust · cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust
+      - run: cargo test --no-run --locked
+      - run: cargo test --locked
+
+  # ──────────────────────────────────────────────────────────────────
+  # Wheel build: For shipping `arrs` to pure Python users
+  # ──────────────────────────────────────────────────────────────────
+  wheel:
+    name: wheel · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-${{ matrix.os }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Build release wheel
+        run: uv run --no-sync maturin build --release --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.os }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────────
+  # Aggregator: a single required check for branch-protection rules,
+  # so we don't have to keep the protected-checks list in sync with
+  # job names.
+  # ──────────────────────────────────────────────────────────────────
+  ci:
+    name: ci
+    if: always()
+    needs: [rust-fmt-clippy, rust-test, wheel]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any required job failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "All required jobs passed."
