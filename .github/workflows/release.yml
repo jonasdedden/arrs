@@ -166,6 +166,29 @@ jobs:
           generate_release_notes: true
 
   # ──────────────────────────────────────────────────────────────────
+  # crates.io publish. Disabled by default — uncomment AFTER creating a
+  # `CARGO_REGISTRY_TOKEN` repo secret. Generate at
+  # https://crates.io/settings/tokens with the `publish-update` scope
+  # restricted to the `arrs` crate. Single-crate workspace, so one
+  # `cargo publish` call is enough.
+  # ──────────────────────────────────────────────────────────────────
+  # crates-io:
+  #   name: publish to crates.io
+  #   if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v5
+  #       with:
+  #         ref: ${{ inputs.ref || github.ref }}
+  #     - uses: ./.github/actions/setup-toolchain
+  #       with:
+  #         cache-key: release-crates-io
+  #     - name: Publish
+  #       env:
+  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+  #       run: cargo publish --locked
+
+  # ──────────────────────────────────────────────────────────────────
   # PyPI publish (trusted publishing). Disabled by default — uncomment
   # AFTER configuring https://pypi.org/manage/account/publishing/ for
   # this repo. Trusted publishing requires no API token: PyPI verifies
