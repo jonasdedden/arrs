@@ -6,11 +6,11 @@ build-backend = "maturin"
 name = "rust-arrs"
 readme = "README.md"
 requires-python = ">=3.7"
+license = "MIT"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: CC0 1.0 Universal (CC0 1.0) Public Domain Dedication",
     "Operating System :: POSIX",
     "Operating System :: MacOS",
     "Programming Language :: Rust",
