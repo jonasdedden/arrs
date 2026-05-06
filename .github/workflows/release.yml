@@ -80,9 +80,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64
-            runs-on: macos-13
-            rust-target: x86_64-apple-darwin
           - target: aarch64
             runs-on: macos-14
             rust-target: aarch64-apple-darwin
