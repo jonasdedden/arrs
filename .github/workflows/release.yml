@@ -147,7 +147,9 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   github-release:
     name: github release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Only on real tag pushes — never on workflow_dispatch, even if dispatched
+    # from a tag ref. `event_name == 'push'` excludes the manual-run path.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -173,7 +175,7 @@ jobs:
   # pypi:
   #   name: publish to PyPI
   #   needs: verify
-  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
   #   runs-on: ubuntu-latest
   #   environment:
   #     name: pypi
