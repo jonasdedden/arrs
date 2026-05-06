@@ -14,7 +14,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Tested target for tests
   PYTHON_VERSION: "3.12"
 
 jobs:
@@ -26,15 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-toolchain
         with:
-          components: rustfmt, clippy
-      # Manually installing protobuf since `arduino/setup-protoc` has no Node 24
-      # release as of 2026-05, which prints a deprecation warning on every job.
-      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends protobuf-compiler
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust
+          cache-key: rust
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -46,11 +39,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends protobuf-compiler
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-toolchain
         with:
-          shared-key: rust
+          cache-key: rust
       - run: cargo test --no-run --locked
       - run: cargo test --locked
 
@@ -66,19 +57,13 @@ jobs:
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends protobuf-compiler
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-toolchain
         with:
-          shared-key: wheel-${{ matrix.os }}
-      - uses: actions/setup-python@v6
-        with:
+          cache-key: wheel-${{ matrix.os }}
+          python: "true"
           python-version: ${{ env.PYTHON_VERSION }}
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
       - name: Build release wheel
-        run: uv run --no-sync maturin build --release --out dist
+        run: uvx maturin build --release --out dist
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.os }}

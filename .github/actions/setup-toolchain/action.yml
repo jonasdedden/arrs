@@ -1,0 +1,59 @@
+name: Setup toolchain
+description: Rust toolchain (from rust-toolchain.toml) + protoc + rust-cache, plus optional Python/uv.
+
+# Note: `actions/checkout` is intentionally NOT bundled. A local composite
+# action is referenced via path, so the repo must already be on disk before
+# this action runs — each caller runs `actions/checkout` first.
+
+inputs:
+  rust-target:
+    description: Optional rustup target triple to install (e.g. aarch64-unknown-linux-gnu).
+    required: false
+    default: ""
+  cache-key:
+    description: Swatinem/rust-cache shared-key.
+    required: false
+    default: ""
+  python:
+    description: Set to "true" to also install Python and uv.
+    required: false
+    default: "false"
+  python-version:
+    description: Python version (only used when python=true).
+    required: false
+    default: "3.12"
+
+runs:
+  using: composite
+  steps:
+    # Reads channel + components from rust-toolchain.toml. We disable this
+    # action's bundled caching and do our own with Swatinem/rust-cache below.
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        target: ${{ inputs.rust-target }}
+        cache: false
+
+    # `arduino/setup-protoc` extracts the official protoc release zip — which
+    # includes the well-known `.proto` files under `<toolpath>/include/` — but
+    # only adds `<toolpath>/bin` to PATH. `prost-build` reads `PROTOC_INCLUDE`
+    # to locate `google/protobuf/empty.proto`, so we wire it up explicitly.
+    - name: Install protoc
+      uses: arduino/setup-protoc@v3
+      with:
+        repo-token: ${{ github.token }}
+    - name: Export PROTOC_INCLUDE
+      shell: bash
+      run: echo "PROTOC_INCLUDE=$(dirname "$(command -v protoc)")/../include" >> "$GITHUB_ENV"
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+
+    - if: ${{ inputs.python == 'true' }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+    - if: ${{ inputs.python == 'true' }}
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true

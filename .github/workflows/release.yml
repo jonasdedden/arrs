@@ -24,37 +24,44 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────────
-  # Linux: manylinux2014 base (glibc 2.17) — covers CentOS 7+, Ubuntu
-  # 18.04+, Debian 10+. PyO3/maturin-action runs maturin inside the
-  # appropriate manylinux container so the wheel auditwheel-tag is
-  # set correctly.
+  # Linux wheels: native runners (x86_64 + aarch64), Zig as the linker
+  # for a glibc 2.17 floor. `--compatibility manylinux2014` tells maturin
+  # to tag the wheel accordingly and run its built-in auditwheel
+  # validation. No QEMU, no manylinux container.
   # ──────────────────────────────────────────────────────────────────
   linux:
     name: linux · ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64, aarch64]
+        include:
+          - target: x86_64
+            runs-on: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+          - target: aarch64
+            runs-on: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-python@v6
+      - uses: ./.github/actions/setup-toolchain
         with:
+          rust-target: ${{ matrix.rust-target }}
+          cache-key: release-linux-${{ matrix.target }}
+          python: "true"
           python-version: ${{ env.PYTHON_VERSION }}
+      - uses: mlugg/setup-zig@v2
       # Use hardcoded version numbers for now - skipping manually setting version numbers
       # - name: Sync workspace + pyproject version to tag
       # run: python3 tools/set_version_from_tag.py "${{ inputs.ref || github.ref }}"
       - name: Build wheel
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          manylinux: "2014"
-          args: --release --out dist
-          # The manylinux2014 image (CentOS-7-based) doesn't ship protoc
-          before-script-linux: |
-            yum install -y protobuf-compiler || dnf install -y protobuf-compiler
+        run: >
+          uvx maturin build --release --zig
+          --target ${{ matrix.rust-target }}
+          --compatibility manylinux2014
+          --out dist
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-linux-${{ matrix.target }}
@@ -63,7 +70,8 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────
   # macOS: x86_64 (Intel) + arm64 (Apple Silicon). The `macos-13`
-  # runner is x86_64, `macos-14` is arm64.
+  # runner is x86_64, `macos-14` is arm64. Both are native — no
+  # cross-compile needed.
   # ──────────────────────────────────────────────────────────────────
   macos:
     name: macos · ${{ matrix.target }}
@@ -74,27 +82,28 @@ jobs:
         include:
           - target: x86_64
             runs-on: macos-13
+            rust-target: x86_64-apple-darwin
           - target: aarch64
             runs-on: macos-14
+            rust-target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions/setup-python@v6
+      - uses: ./.github/actions/setup-toolchain
         with:
+          rust-target: ${{ matrix.rust-target }}
+          cache-key: release-macos-${{ matrix.target }}
+          python: "true"
           python-version: ${{ env.PYTHON_VERSION }}
-      # `arduino/setup-protoc` has no Node-24 release, which prints
-      # a deprecation warning. Homebrew already has protoc and is
-      # cached on macOS runners, so just install it directly.
-      - run: brew install protobuf
       # Use hardcoded version numbers for now - skipping manually setting version numbers
       # - name: Sync workspace + pyproject version to tag
       # run: python3 tools/set_version_from_tag.py "${{ inputs.ref || github.ref }}"
       - name: Build wheel
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}-apple-darwin
-          args: --release --out dist
+        run: >
+          uvx maturin build --release
+          --target ${{ matrix.rust-target }}
+          --out dist
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-macos-${{ matrix.target }}
@@ -102,8 +111,8 @@ jobs:
           if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────────────
-  # Source distribution. Platform-independent, but we run on Linux
-  # for fastest spin-up. Same artifact contains the sdist tarball.
+  # Source distribution. Platform-independent, so just spin up the
+  # cheapest runner and let maturin package the source.
   # ──────────────────────────────────────────────────────────────────
   sdist:
     name: sdist
@@ -115,14 +124,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
       # Use hardcoded version numbers for now - skipping manually setting version numbers
       # - name: Sync workspace + pyproject version to tag
       # run: python3 tools/set_version_from_tag.py "${{ inputs.ref || github.ref }}"
       - name: Build sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
+        run: uvx maturin sdist --out dist
       - uses: actions/upload-artifact@v7
         with:
           name: sdist
