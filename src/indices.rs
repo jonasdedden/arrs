@@ -69,6 +69,14 @@ fn resolve_single(i: i64, rowcount: u64) -> Result<u64> {
     Ok(resolved as u64)
 }
 
+/// Resolve a single signed `--index` value against the dataset row count,
+/// applying the same negative-index semantics as `take` (`-1` is the last row).
+/// Shared with the `blob` command, which takes exactly one index. An empty
+/// dataset always yields [`Error::IndexOutOfRange`].
+pub fn resolve_index(index: i64, rowcount: u64) -> Result<u64> {
+    resolve_single(index, rowcount)
+}
+
 /// Parse `--indices` and expand against the dataset row count.
 pub fn resolve(raw: &str, rowcount: u64) -> Result<Vec<u64>> {
     let exprs = parse(raw).map_err(Error::IndexParse)?;
@@ -193,6 +201,34 @@ mod tests {
     fn empty_dataset_single_error() {
         assert!(matches!(
             resolve("0", 0),
+            Err(Error::IndexOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_index_positive_and_negative() {
+        assert_eq!(resolve_index(0, 10).unwrap(), 0);
+        assert_eq!(resolve_index(9, 10).unwrap(), 9);
+        assert_eq!(resolve_index(-1, 10).unwrap(), 9);
+        assert_eq!(resolve_index(-10, 10).unwrap(), 0);
+    }
+
+    #[test]
+    fn resolve_index_out_of_range() {
+        assert!(matches!(
+            resolve_index(10, 10),
+            Err(Error::IndexOutOfRange { .. })
+        ));
+        assert!(matches!(
+            resolve_index(-11, 10),
+            Err(Error::IndexOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_index_empty_dataset() {
+        assert!(matches!(
+            resolve_index(0, 0),
             Err(Error::IndexOutOfRange { .. })
         ));
     }

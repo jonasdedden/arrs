@@ -141,6 +141,34 @@ pub trait LanceCapabilities: Send + Sync {
     /// each endpoint and to detect a cross-branch comparison after both handles
     /// have been opened and any tag/branch selectors resolved.
     fn checkout_state(&self) -> CheckoutState;
+
+    /// True when `column` is a Lance blob-encoded column (`lance-encoding:blob`
+    /// field metadata). Such columns store payloads too large to materialize
+    /// through a normal scan/`take`, so the `blob` command reads them via
+    /// [`Self::open_blob`] instead. Returns `false` for a missing column too;
+    /// the caller validates existence separately against the arrow schema.
+    fn is_blob_column(&self, column: &str) -> bool;
+
+    /// Open a streaming reader over the blob payload at row offset `index` in
+    /// the blob-encoded `column`. `index` is a resolved (non-negative) offset.
+    /// `Ok(None)` means the cell is null (no payload to extract). Bytes are
+    /// pulled lazily so multi-GB payloads never need to be held in memory.
+    async fn open_blob(&self, column: &str, index: u64) -> Result<Option<Box<dyn BlobRead>>>;
+}
+
+/// Streaming reader over a single Lance blob cell's payload.
+///
+/// Bytes are pulled in bounded chunks rather than materialized all at once, so
+/// extracting a multi-GB payload stays within a fixed memory budget. Backed by
+/// Lance's `BlobFile` in the Lance adapter.
+#[async_trait]
+pub trait BlobRead: Send {
+    /// Total payload size in bytes.
+    fn size(&self) -> u64;
+
+    /// Read up to `max` bytes from the current cursor, advancing it. Returns an
+    /// empty buffer once the payload is exhausted.
+    async fn read_chunk(&mut self, max: usize) -> Result<Vec<u8>>;
 }
 
 /// The resolved branch and version of an opened Lance handle.
