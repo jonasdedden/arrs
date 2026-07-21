@@ -5,7 +5,7 @@ use arrow_schema::{DataType, Field, Schema};
 
 use crate::Result;
 use crate::cli::{BinaryFormat, Format, LanceArgs};
-use crate::commands::common::make_stdout_writer;
+use crate::commands::common::{human_bytes, make_stdout_writer};
 use crate::dataset::{self, FragmentInfo};
 use crate::error::Error;
 
@@ -127,37 +127,9 @@ fn print_summary(fragments: &[FragmentInfo], no_size: bool) {
     println!("{line}");
 }
 
-/// Format a byte count with binary (KiB/MiB/…) units for human consumption.
-fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    // The `>= 1023.95` threshold (rather than `>= 1024.0`) bumps to the next
-    // unit when the value would round up to `1024.0` at one decimal place —
-    // e.g. 1,048,575 bytes shows as `1.0 MiB`, not `1024.0 KiB`.
-    while value >= 1023.95 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn human_bytes_boundaries() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(1023), "1023 B");
-        assert_eq!(human_bytes(1024), "1.0 KiB");
-        // Just under 1 MiB must not render as `1024.0 KiB`.
-        assert_eq!(human_bytes(1_048_575), "1.0 MiB");
-        assert_eq!(human_bytes(1_048_576), "1.0 MiB");
-    }
 
     #[test]
     fn print_summary_uses_totals() {

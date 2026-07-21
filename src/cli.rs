@@ -185,12 +185,13 @@ pub enum Command {
         lance: LanceArgs,
     },
 
-    /// Print per-column summary statistics (like `df.describe()`).
+    /// Per-column summary statistics, one row per column (like `df.describe()`).
     ///
-    /// One row per column: count (non-null), nulls, min/max (numeric, temporal,
-    /// string, boolean), mean/stddev (numeric only), and an approximate distinct
-    /// count (exact up to a cap, then reported as `>N`). Nested/binary/decimal
-    /// columns report count and nulls only.
+    /// Scans the data to report count (non-null), nulls, min/max (numeric,
+    /// temporal, string, boolean), mean/stddev (numeric only), and an approximate
+    /// distinct count (exact up to a cap, then reported as `>N`). Nested/binary/
+    /// decimal columns report count and nulls only. For a whole-dataset health
+    /// summary (rows, fragments, size, versions) instead, see `stat`.
     Stats {
         input: String,
         #[command(flatten)]
@@ -215,6 +216,22 @@ pub enum Command {
         sort: FreqSort,
         #[command(flatten)]
         filter: FilterArg,
+        #[command(flatten)]
+        lance: LanceArgs,
+    },
+
+    /// (Lance only) One-screen dataset health summary — the `stat(1)` of datasets.
+    ///
+    /// Metadata-only (no data scan): rows, deleted rows + ratio, columns,
+    /// fragment row-count spread, on-disk size, and version/branch/tag/index
+    /// counts, with a conservative compaction hint. For per-column statistics
+    /// (the `df.describe()`-style breakdown) use `stats` instead.
+    Stat {
+        input: String,
+        /// Skip on-disk size computation, avoiding object-store lookups on very
+        /// remote or huge datasets. The `data size` field is left empty/null.
+        #[arg(long = "no-size")]
+        no_size: bool,
         #[command(flatten)]
         lance: LanceArgs,
     },

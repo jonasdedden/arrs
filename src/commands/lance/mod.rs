@@ -8,5 +8,6 @@ pub mod fragments;
 pub mod index_stats;
 pub mod indices;
 pub mod search;
+pub mod stat;
 pub mod tags;
 pub mod versions;

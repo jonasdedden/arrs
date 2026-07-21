@@ -223,6 +223,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             input,
             lance: lance_args,
         } => lance::index_stats::run(&input, &lance_args, format, binary_format).await,
+        Command::Stat {
+            input,
+            no_size,
+            lance: lance_args,
+        } => lance::stat::run(&input, &lance_args, no_size, format, binary_format).await,
     }
 }
 
@@ -242,7 +247,8 @@ fn resolve_format(explicit: Option<Format>, cmd: &Command) -> Format {
         | Command::Indices { .. }
         | Command::IndexStats { .. }
         | Command::Fragments { .. }
-        | Command::Stats { .. } => Format::Table,
+        | Command::Stats { .. }
+        | Command::Stat { .. } => Format::Table,
         _ => Format::Jsonl,
     }
 }

@@ -416,6 +416,10 @@ impl Dataset for LanceDataset {
 
 #[async_trait]
 impl LanceCapabilities for LanceDataset {
+    fn manifest_version(&self) -> u64 {
+        self.inner.version().version
+    }
+
     async fn list_versions(
         &self,
         branch: Option<&str>,
