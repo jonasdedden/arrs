@@ -13,7 +13,6 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
@@ -39,7 +38,7 @@ const OTHER_LABEL: &str = "<other>";
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    input: &Path,
+    input: &str,
     column: &str,
     limit: Option<u64>,
     sort: FreqSort,
@@ -525,7 +524,7 @@ mod tests {
 
     async fn open_labels(dir: &Path) -> Arc<dyn Dataset> {
         let path = write_labels(dir, "ds", FRAGMENTS).await;
-        dataset::open(&path, None).await.unwrap()
+        dataset::open(path.to_str().unwrap(), None).await.unwrap()
     }
 
     #[tokio::test]
@@ -584,7 +583,7 @@ mod tests {
             &[Some("alpha"), Some("bravo")],
         ];
         let path = write_labels(tmp.path(), "tie", frags).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
         let batch = compute(
             ds.as_ref(),
             "label",
@@ -728,7 +727,7 @@ mod tests {
         use crate::test_support::write_int_fragments;
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ints", &[&[1, 1, 2], &[2, 2, 3]]).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
         let batch = compute(
             ds.as_ref(),
             "id",
@@ -768,7 +767,7 @@ mod tests {
         let path = tmp.path().join("nested");
         let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
         crate::lance::write_dataset(&path, iter).await.unwrap();
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         let err = compute(
             ds.as_ref(),
@@ -803,7 +802,7 @@ mod tests {
         let path = tmp.path().join("bin");
         let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
         crate::lance::write_dataset(&path, iter).await.unwrap();
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         let err = compute(
             ds.as_ref(),
@@ -843,7 +842,7 @@ mod tests {
         use crate::test_support::write_int_fragments;
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ints", &[&[9, 10, 10, 2], &[-1, -2, -2]]).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
         let batch = compute(
             ds.as_ref(),
             "id",
@@ -876,7 +875,7 @@ mod tests {
         let path = tmp.path().join("floats");
         let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
         crate::lance::write_dataset(&path, iter).await.unwrap();
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         let batch = compute(
             ds.as_ref(),
