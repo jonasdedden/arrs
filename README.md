@@ -556,8 +556,12 @@ arrs diff --branch dev --from 2 --to 5 dataset.lance
 It reports:
 
 - **Row delta** — live row count at each version and the net change, split into
-  rows added vs deleted from fragment metadata (appended fragments vs removed
-  fragments and new tombstones) rather than only the net.
+  rows added vs deleted from fragment metadata (appended fragments and
+  un-tombstoned rows vs removed fragments and new tombstones) rather than only
+  the net. The split is metadata-truthful, not a logical diff: because Lance
+  rewrites whole fragments, a compaction that rewrites `N` unchanged rows counts
+  them as `+N` added and `−N` deleted (net 0), and a version `restore` shows the
+  rows it brings back as added.
 - **Schema changes** — columns added, removed, or retyped (a nullability change
   counts as a retype, shown as `Int32` → `Int32?`).
 - **Fragment changes** — fragments added, removed, or *rewritten*. Lance never

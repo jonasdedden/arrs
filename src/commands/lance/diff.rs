@@ -23,10 +23,8 @@ use serde_json::{Value, json};
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
 use crate::commands::Outcome;
-use crate::dataset::{self, FragmentInfo, IndexInfo, VersionInfo};
+use crate::dataset::{self, FragmentInfo, IndexInfo, MAIN_BRANCH, VersionInfo};
 use crate::error::Error;
-
-const MAIN_BRANCH: &str = "main";
 
 /// Version/tag/branch selectors parsed from the `diff` subcommand flags.
 #[derive(Debug, Default, Clone)]
@@ -168,7 +166,8 @@ struct DiffReport {
 struct RowDelta {
     from_rows: u64,
     to_rows: u64,
-    /// Live rows (physical − deleted) in fragments present only in `to`.
+    /// Live rows (physical − deleted) in fragments present only in `to`, plus
+    /// rows un-tombstoned on fragments present in both (e.g. a version restore).
     added: u64,
     /// Live rows in fragments present only in `from`, plus the increase in
     /// tombstones on fragments present in both.
@@ -226,33 +225,38 @@ fn build_row_delta(from: &[FragmentInfo], to: &[FragmentInfo]) -> RowDelta {
     let from_rows: u64 = from.iter().map(live_rows).sum();
     let to_rows: u64 = to.iter().map(live_rows).sum();
 
-    // Rows added = live rows in fragments that appear only in `to`.
-    let added: u64 = to
+    // Live rows in fragments present only in `to` are added; live rows in
+    // fragments present only in `from` are deleted.
+    let added_frag_rows: u64 = to
         .iter()
         .filter(|f| !from_by_id.contains_key(&f.id))
         .map(live_rows)
         .sum();
-
-    // Rows deleted = live rows in fragments that appear only in `from`, plus the
-    // extra tombstones applied to fragments surviving into `to`.
     let removed_frag_rows: u64 = from
         .iter()
         .filter(|f| !to_by_id.contains_key(&f.id))
         .map(live_rows)
         .sum();
-    let new_tombstones: u64 = to
-        .iter()
-        .filter_map(|f| {
-            from_by_id
-                .get(&f.id)
-                .map(|old| f.deleted_rows.saturating_sub(old.deleted_rows))
-        })
-        .sum();
+
+    // Tombstone changes on fragments present in both versions are symmetric: an
+    // *increase* in tombstones deletes live rows, a *decrease* adds them back.
+    // A decrease happens when a version `restore` un-deletes rows (or on a
+    // reversed range). Counting both directions keeps the identity
+    // `added - deleted == to_rows - from_rows` exact — dropping the decrease
+    // would make a pure un-delete look like "no change".
+    let mut new_tombstones = 0u64; // rows freshly tombstoned  -> deleted
+    let mut restored_tombstones = 0u64; // rows un-tombstoned    -> added
+    for f in to {
+        if let Some(old) = from_by_id.get(&f.id) {
+            new_tombstones += f.deleted_rows.saturating_sub(old.deleted_rows);
+            restored_tombstones += old.deleted_rows.saturating_sub(f.deleted_rows);
+        }
+    }
 
     RowDelta {
         from_rows,
         to_rows,
-        added,
+        added: added_frag_rows + restored_tombstones,
         deleted: removed_frag_rows + new_tombstones,
     }
 }
@@ -381,6 +385,9 @@ impl DiffReport {
             && self.indices.dropped.is_empty()
             && self.rows.added == 0
             && self.rows.deleted == 0
+            // Belt-and-braces: a live-row count change must never read as
+            // identical even if the per-fragment split somehow nets to zero.
+            && self.rows.from_rows == self.rows.to_rows
     }
 
     fn write_human<W: Write>(&self, out: &mut W, input: &str) -> Result<()> {
@@ -575,6 +582,44 @@ mod tests {
         assert_eq!(d.deleted, 1);
     }
 
+    /// Asserts the identity that drives the `diff(1)` exit code: the split must
+    /// always reconcile with the net live-row change.
+    fn assert_row_invariant(d: &RowDelta) {
+        assert_eq!(
+            d.added as i64 - d.deleted as i64,
+            d.to_rows as i64 - d.from_rows as i64,
+            "added - deleted must equal net"
+        );
+    }
+
+    #[test]
+    fn row_delta_counts_restored_tombstones_as_added() {
+        // A version `restore` un-deletes rows on a surviving fragment: from had
+        // 2 tombstones (7 live), to has 0 (9 live) → +2 added, 0 deleted.
+        let from = vec![frag(0, 9, 2, &["a.lance"])];
+        let to = vec![frag(0, 9, 0, &["a.lance"])];
+        let d = build_row_delta(&from, &to);
+        assert_eq!(d.from_rows, 7);
+        assert_eq!(d.to_rows, 9);
+        assert_eq!(d.added, 2);
+        assert_eq!(d.deleted, 0);
+        assert_row_invariant(&d);
+    }
+
+    #[test]
+    fn row_delta_reversed_range_is_symmetric() {
+        // The reverse of the append+delete case: fragment 1 disappears (deleted)
+        // and fragment 0's tombstone is undone (added).
+        let from = vec![frag(0, 2, 1, &["a.lance"]), frag(1, 1, 0, &["b.lance"])];
+        let to = vec![frag(0, 2, 0, &["a.lance"])];
+        let d = build_row_delta(&from, &to);
+        assert_eq!(d.from_rows, 2);
+        assert_eq!(d.to_rows, 2);
+        assert_eq!(d.added, 1); // fragment 0 un-tombstoned
+        assert_eq!(d.deleted, 1); // fragment 1 removed
+        assert_row_invariant(&d);
+    }
+
     #[test]
     fn row_delta_pure_append() {
         let from = vec![frag(0, 2, 0, &["a.lance"])];
@@ -698,5 +743,25 @@ mod tests {
         assert_eq!(v["identical"], json!(false));
         assert_eq!(v["rows"]["added"], json!(1));
         assert_eq!(v["fragments"]["added"], json!([1]));
+    }
+
+    #[test]
+    fn restore_endpoints_are_not_identical() {
+        // Same fragment id + files, but tombstones removed (a restore). The only
+        // change is the live-row count; this must not read as identical.
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let from = endpoint(2, schema.clone(), vec![frag(0, 9, 2, &["a.lance"])]);
+        let to = endpoint(3, schema, vec![frag(0, 9, 0, &["a.lance"])]);
+        let report = build_report(&from, &to, vec![]);
+        assert!(!report.is_identical());
+        assert_eq!(report.rows.added, 2);
+        assert_eq!(report.rows.deleted, 0);
+        let mut buf: Vec<u8> = Vec::new();
+        report.write_human(&mut buf, "ds.lance").unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(
+            !text.contains("No differences."),
+            "restore must not report identical: {text}"
+        );
     }
 }

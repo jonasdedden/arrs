@@ -19,12 +19,10 @@ use crate::Result;
 use crate::cli::LanceArgs;
 use crate::dataset::{
     BatchStream, BranchInfo, CheckoutState, Dataset, FragmentInfo, IndexInfo, IndexStats,
-    LanceCapabilities,
-    ScanOptions, TagInfo, VectorSearchParams, VectorSearchResult, VersionInfo,
+    LanceCapabilities, MAIN_BRANCH, ScanOptions, TagInfo, VectorSearchParams, VectorSearchResult,
+    VersionInfo,
 };
 use crate::error::Error;
-
-const MAIN_BRANCH: &str = "main";
 
 /// Max in-flight object-store `size` lookups when computing fragment sizes.
 /// Fragments are typically backed by a single data file, so this bounds the

@@ -1772,6 +1772,49 @@ fn diff_unsupported_format_errors_with_exit_two() {
 }
 
 #[test]
+fn diff_restore_reports_added_rows_not_no_differences() {
+    // Regression: a version `restore` that un-deletes rows changes only the live
+    // row count. It must report `+added` rows and exit 1, never "No differences".
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    let uri = path.to_string_lossy().into_owned();
+    runtime().block_on(async {
+        // v1: 9 rows.
+        let iter = RecordBatchIterator::new(
+            vec![Ok(diff_batch(
+                (1..=9).collect(),
+                vec!["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+            ))],
+            diff_schema(),
+        );
+        let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+        // v2: delete 2 rows → 7 live.
+        ds.delete("id in (1, 2)").await.unwrap();
+        // v3: restore v1 → 9 live again.
+        let mut restored = ds.checkout_version(1).await.unwrap();
+        restored.restore().await.unwrap();
+    });
+
+    // JSON view: from v2 (7 live) to v3 (9 live) → +2 added, exit 1.
+    let v = diff_json(&["--from", "2", "--to", "3"], &path, 1);
+    assert_eq!(v["identical"], serde_json::json!(false));
+    assert_eq!(v["rows"]["from"], serde_json::json!(7));
+    assert_eq!(v["rows"]["to"], serde_json::json!(9));
+    assert_eq!(v["rows"]["added"], serde_json::json!(2));
+    assert_eq!(v["rows"]["deleted"], serde_json::json!(0));
+    assert_eq!(v["rows"]["net"], serde_json::json!(2));
+
+    // Human view must not claim "No differences".
+    let out = run_diff(&["--from", "2", "--to", "3"], &path);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("No differences."),
+        "restore reported identical:\n{stdout}"
+    );
+}
+
+#[test]
 fn diff_index_creation_is_reported() {
     let tmp = tempdir();
     let path = tmp.path().join("ds");

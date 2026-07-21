@@ -13,6 +13,10 @@ use crate::Result;
 use crate::cli::LanceArgs;
 use crate::error::Error;
 
+/// The name Lance's implicit default branch is surfaced under. Lance stores it
+/// as `None` internally; the adapter and commands normalise that to `"main"`.
+pub const MAIN_BRANCH: &str = "main";
+
 /// Stream of `RecordBatch` results produced by a scan.
 pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>;
 
