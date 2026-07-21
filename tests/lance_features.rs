@@ -4,7 +4,6 @@
 
 mod common;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
@@ -50,7 +49,7 @@ fn batch(ids: Vec<i32>, vals: Vec<&str>) -> RecordBatch {
 /// branch off v2. No index — index creation hits datafusion's shared sort
 /// pool and serialises poorly across cargo's parallel test threads, so it's
 /// only added by `build_fixture_with_index`.
-async fn build_fixture(tmp: &TempDir, name: &str) -> PathBuf {
+async fn build_fixture(tmp: &TempDir, name: &str) -> String {
     let path = tmp.path().join(name);
     let uri = path.to_string_lossy().into_owned();
 
@@ -72,14 +71,13 @@ async fn build_fixture(tmp: &TempDir, name: &str) -> PathBuf {
     // branch `dev` off main version 2
     let _ = ds.create_branch("dev", 2u64, None).await.unwrap();
 
-    path
+    uri
 }
 
 /// Like `build_fixture` but with an additional BTree index on `id`.
 /// Only used by the single index test.
-async fn build_fixture_with_index(tmp: &TempDir, name: &str) -> PathBuf {
-    let path = build_fixture(tmp, name).await;
-    let uri = path.to_string_lossy().into_owned();
+async fn build_fixture_with_index(tmp: &TempDir, name: &str) -> String {
+    let uri = build_fixture(tmp, name).await;
     let mut ds = LanceInner::open(uri.as_str()).await.unwrap();
     ds.create_index(
         &["id"],
@@ -90,7 +88,7 @@ async fn build_fixture_with_index(tmp: &TempDir, name: &str) -> PathBuf {
     )
     .await
     .unwrap();
-    path
+    uri
 }
 
 // ----------------------------- adapter-level --------------------------------
@@ -149,8 +147,7 @@ fn list_tags_returns_cross_branch_view() {
 
         // The fixture creates a `dev` branch from main v2 — give it its own
         // version + tag so we can assert tags are surfaced cross-branch.
-        let uri = path.to_string_lossy().into_owned();
-        let dev = LanceInner::open(uri.as_str())
+        let dev = LanceInner::open(path.as_str())
             .await
             .unwrap()
             .checkout_branch("dev")
@@ -195,7 +192,7 @@ fn list_indices_finds_btree_index() {
 
 /// Build a dataset with three fragments (one per append) and, when `delete` is
 /// set, tombstone a single row so exactly one fragment carries a deletion file.
-async fn build_fragmented(tmp: &TempDir, name: &str, delete: bool) -> PathBuf {
+async fn build_fragmented(tmp: &TempDir, name: &str, delete: bool) -> String {
     let path = tmp.path().join(name);
     let uri = path.to_string_lossy().into_owned();
 
@@ -212,7 +209,7 @@ async fn build_fragmented(tmp: &TempDir, name: &str, delete: bool) -> PathBuf {
         // `id = 3` lives in the second fragment.
         ds.delete("id = 3").await.unwrap();
     }
-    path
+    uri
 }
 
 #[test]
@@ -399,7 +396,47 @@ fn open_non_lance_path_errors_with_unknown_format() {
         let tmp = tempdir();
         let path = tmp.path().join("not-a-dataset");
         std::fs::create_dir_all(&path).unwrap();
-        let err = dataset::open(&path, None).await.unwrap_err();
+        let err = dataset::open(path.to_str().unwrap(), None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, arrs::error::Error::UnknownFormat { .. }));
+    });
+}
+
+#[test]
+fn open_via_file_uri_scheme_matches_local_path() {
+    // A `file://` URI takes the scheme-qualified dispatch path (no local
+    // `_versions/` probe) yet must resolve to the same local dataset.
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let uri = build_fixture(&tmp, "ds").await; // absolute local path
+        let file_uri = format!("file://{uri}");
+
+        let ds = dataset::open(&file_uri, None).await.unwrap();
+        assert_eq!(ds.origin(), file_uri);
+        assert_eq!(ds.count_rows(None).await.unwrap(), 4);
+    });
+}
+
+#[test]
+fn open_nonexistent_scheme_uri_errors_with_uri_in_message() {
+    // Scheme-qualified inputs skip the local heuristic and defer to the adapter,
+    // whose error must name the offending URI and carry a readable cause rather
+    // than a raw debug dump.
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let missing = format!("file://{}/does-not-exist.lance", tmp.path().display());
+
+        let err = dataset::open(&missing, None).await.unwrap_err();
+        match &err {
+            arrs::error::Error::LanceOpen { path, source } => {
+                assert_eq!(path, &missing);
+                // The wrapped cause is surfaced via Display, not `{:?}`.
+                assert!(!format!("{source}").is_empty());
+            }
+            other => panic!("expected LanceOpen, got {other:?}"),
+        }
+        // Top-level Display carries the URI for the user.
+        assert!(format!("{err}").contains(&missing));
     });
 }

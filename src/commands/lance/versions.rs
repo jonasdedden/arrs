@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt64Array};
@@ -11,7 +10,7 @@ use crate::dataset;
 use crate::error::Error;
 
 pub async fn run(
-    input: &Path,
+    input: &str,
     branch: Option<&str>,
     tagged_only: bool,
     format: Format,
@@ -20,7 +19,7 @@ pub async fn run(
     let ds = dataset::open(input, None).await?;
     let lance = ds.lance().ok_or_else(|| Error::NotLance {
         command: "versions",
-        path: input.to_path_buf(),
+        path: input.to_string(),
     })?;
 
     let versions = lance.list_versions(branch, tagged_only).await?;

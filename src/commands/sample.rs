@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use arrow_array::RecordBatch;
 use futures::StreamExt;
 use rand::SeedableRng;
@@ -15,7 +13,7 @@ use crate::projection;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    input: &Path,
+    input: &str,
     limit: u64,
     seed: Option<u64>,
     format: Format,
@@ -162,7 +160,7 @@ mod tests {
     async fn samples_only_matching_rows_and_is_reproducible() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         // Matching (even) ids are [0, 2, 4, 6, 8].
         let a = sample_by_reservoir(ds.as_ref(), 3, Some(42), None, "id % 2 = 0")
@@ -188,7 +186,7 @@ mod tests {
     async fn covers_all_matching_when_limit_equals_match_count() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         let out = sample_by_reservoir(ds.as_ref(), 5, Some(1), None, "id % 2 = 0")
             .await
@@ -203,7 +201,7 @@ mod tests {
     async fn errors_when_sample_larger_than_match_count() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         // Only one row matches, so a sample of 3 is impossible.
         let err = sample_by_reservoir(ds.as_ref(), 3, Some(1), None, "id = 0")
@@ -222,7 +220,7 @@ mod tests {
     async fn empty_match_yields_no_batch() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         // Zero matches with a positive limit is "too large" (0 available rows).
         let err = sample_by_reservoir(ds.as_ref(), 1, Some(1), None, "id > 100")

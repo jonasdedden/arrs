@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use futures::StreamExt;
 
 use crate::Result;
@@ -10,7 +8,7 @@ use crate::error::Error;
 use crate::projection;
 
 pub async fn run(
-    inputs: &[PathBuf],
+    inputs: &[String],
     format: Format,
     binary_format: BinaryFormat,
     columns: Option<&[String]>,

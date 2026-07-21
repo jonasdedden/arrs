@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use futures::StreamExt;
 
 use crate::Result;
@@ -10,7 +8,7 @@ use crate::projection;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    input: &Path,
+    input: &str,
     limit: u64,
     format: Format,
     binary_format: BinaryFormat,

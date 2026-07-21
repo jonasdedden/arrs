@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deleted rows, data file count/paths and on-disk size, with a table-mode summary
   line, `--verbose` and `--no-size` flags, and `--branch`/`--version`/`--tag`
   support (#15).
+- Support remote object-store URIs (`s3://`, `gs://`, `az://`, `file://`) as
+  dataset inputs for every command, using ambient environment credentials (#7).
 
 ### Changed
 

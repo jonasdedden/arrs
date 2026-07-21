@@ -31,7 +31,11 @@ clap = { version = "4.6.1", features = ["derive"] }
 comfy-table = "7.2.2"
 csv = "1.4.0"
 futures = "0.3.32"
-lance = "4.0.0"
+# `aws`/`gcp`/`azure` enable object_store backends for s3://, gs:// and az://
+# URIs. They are part of lance's default feature set, so listing them here is a
+# deliberate no-op that pins remote support even if defaults ever change; it
+# adds no binary size over the stock defaults.
+lance = { version = "4.0.0", features = ["aws", "gcp", "azure"] }
 lance-index = "4"
 rand = "0.10.1"
 rand_chacha = "0.10.0"

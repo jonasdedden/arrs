@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -99,9 +97,9 @@ pub struct Cli {
 pub enum Command {
     /// Concatenate one or more datasets and print every row.
     Cat {
-        /// Dataset paths (at least one).
+        /// Dataset paths or object-store URIs (at least one).
         #[arg(required = true)]
-        inputs: Vec<PathBuf>,
+        inputs: Vec<String>,
         #[command(flatten)]
         filter: FilterArg,
         #[command(flatten)]
@@ -110,7 +108,7 @@ pub enum Command {
 
     /// Print the first N rows.
     Head {
-        input: PathBuf,
+        input: String,
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: u64,
         #[command(flatten)]
@@ -121,7 +119,7 @@ pub enum Command {
 
     /// Print the last N rows.
     Tail {
-        input: PathBuf,
+        input: String,
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: u64,
         #[command(flatten)]
@@ -132,7 +130,7 @@ pub enum Command {
 
     /// Print rows at the given indices (comma-separated; supports `a:b`, `a:`, `:b`, negatives).
     Take {
-        input: PathBuf,
+        input: String,
         #[arg(long, allow_hyphen_values = true)]
         indices: String,
         #[command(flatten)]
@@ -143,7 +141,7 @@ pub enum Command {
 
     /// Print the number of rows.
     Rowcount {
-        input: PathBuf,
+        input: String,
         #[command(flatten)]
         filter: FilterArg,
         #[command(flatten)]
@@ -152,7 +150,7 @@ pub enum Command {
 
     /// Randomly sample N rows without replacement.
     Sample {
-        input: PathBuf,
+        input: String,
         #[arg(short = 'n', long)]
         limit: u64,
         /// Optional u64 seed for reproducibility.
@@ -166,7 +164,7 @@ pub enum Command {
 
     /// Print the schema of the dataset.
     Schema {
-        input: PathBuf,
+        input: String,
         /// Which schema flavor to print.
         #[arg(long = "type", value_enum, default_value_t = SchemaType::Arrow)]
         ty: SchemaType,
@@ -176,7 +174,7 @@ pub enum Command {
 
     /// (Lance only) Print versions of the dataset.
     Versions {
-        input: PathBuf,
+        input: String,
         /// Scope to a specific branch (default: main).
         #[arg(long)]
         branch: Option<String>,
@@ -186,21 +184,21 @@ pub enum Command {
     },
 
     /// (Lance only) Print branches available for the dataset.
-    Branches { input: PathBuf },
+    Branches { input: String },
 
     /// (Lance only) Print tags defined on the dataset, across all branches.
-    Tags { input: PathBuf },
+    Tags { input: String },
 
     /// (Lance only) Print indices defined on the dataset.
     Indices {
-        input: PathBuf,
+        input: String,
         #[command(flatten)]
         lance: LanceArgs,
     },
 
     /// (Lance only) List fragments with row, deletion, file, and size info.
     Fragments {
-        input: PathBuf,
+        input: String,
         /// Show each fragment's data file paths in table output (they are
         /// always included in jsonl/csv output).
         #[arg(long)]

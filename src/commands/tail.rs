@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::path::Path;
 
 use arrow_array::RecordBatch;
 use futures::StreamExt;
@@ -12,7 +11,7 @@ use crate::projection;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    input: &Path,
+    input: &str,
     limit: u64,
     format: Format,
     binary_format: BinaryFormat,
@@ -135,7 +134,7 @@ mod tests {
     async fn keeps_last_matching_rows_across_batches() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         // Even ids are [0, 2, 4, 6, 8]; the last three are [4, 6, 8].
         let batches = tail_by_stream(ds.as_ref(), 3, None, "id % 2 = 0")
@@ -148,7 +147,7 @@ mod tests {
     async fn limit_exceeding_matches_returns_all_matching() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         let batches = tail_by_stream(ds.as_ref(), 100, None, "id >= 7")
             .await
@@ -160,7 +159,7 @@ mod tests {
     async fn empty_match_returns_no_batches() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         let batches = tail_by_stream(ds.as_ref(), 3, None, "id > 100")
             .await

@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -40,7 +40,7 @@ pub struct ScanOptions<'a> {
 #[async_trait]
 pub trait Dataset: Send + Sync + Debug {
     /// Path or URI the dataset was opened from.
-    fn origin(&self) -> &Path;
+    fn origin(&self) -> &str;
 
     /// Logical arrow schema of the dataset.
     fn arrow_schema(&self) -> SchemaRef;
@@ -154,13 +154,15 @@ pub struct FragmentInfo {
     pub size: Option<u64>,
 }
 
-/// Open a dataset at `path`, optionally checking out a specific Lance
-/// branch/version/tag. Returns an error if the dataset is not Lance and any
+/// Open a dataset at `input`, optionally checking out a specific Lance
+/// branch/version/tag. `input` is either a local path (`/data/foo.lance`,
+/// with or without a `file://` prefix) or an object-store URI (`s3://…`,
+/// `gs://…`, `az://…`). Returns an error if the dataset is not Lance and any
 /// `LanceArgs` field is set.
-pub async fn open(path: &Path, lance: Option<&LanceArgs>) -> Result<Arc<dyn Dataset>> {
-    match detect_format(path)? {
+pub async fn open(input: &str, lance: Option<&LanceArgs>) -> Result<Arc<dyn Dataset>> {
+    match detect_format(input)? {
         Format::Lance => {
-            let ds = crate::lance::LanceDataset::open(path, lance).await?;
+            let ds = crate::lance::LanceDataset::open(input, lance).await?;
             Ok(Arc::new(ds))
         }
     }
@@ -171,23 +173,99 @@ pub enum Format {
     Lance,
 }
 
-/// Determine which adapter should be used for `path`. Today we only support
-/// Lance; the function exists in match shape so a Parquet (or other) arm can
-/// be added without touching call sites.
-pub fn detect_format(path: &Path) -> Result<Format> {
-    if is_lance_dataset(path) {
+/// Determine which adapter should be used for `input`.
+///
+/// Scheme-qualified inputs (`s3://`, `gs://`, `az://`, `file://`, …) are
+/// resolved by the object store rather than the local filesystem, so we can't
+/// probe them cheaply here. Instead we defer to the adapter's own `open`, which
+/// maps any failure to a URI-bearing error — this avoids duplicating Lance's
+/// object-store resolution logic. Scheme-less inputs are local paths and keep
+/// the `_versions/` directory heuristic, so a future non-Lance format can still
+/// be dispatched from here.
+///
+/// Today we only support Lance; the function exists in match shape so a Parquet
+/// (or other) arm can be added without touching call sites.
+pub fn detect_format(input: &str) -> Result<Format> {
+    if has_scheme(input) || is_lance_dataset(input) {
         Ok(Format::Lance)
     } else {
         Err(Error::UnknownFormat {
-            path: path.to_path_buf(),
+            path: input.to_string(),
         })
     }
 }
 
-fn is_lance_dataset(path: &Path) -> bool {
+/// True when `input` starts with a URI scheme followed by `://`
+/// (e.g. `s3://bucket/…`, `file:///data/…`). A bare Windows drive letter such
+/// as `C:\data` has no `//` and is therefore correctly treated as a local path.
+fn has_scheme(input: &str) -> bool {
+    let Some((scheme, _rest)) = input.split_once("://") else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+fn is_lance_dataset(input: &str) -> bool {
     // A Lance dataset is a directory that contains a `_versions/` subfolder.
     // (`_transactions/` is the other typical marker but not always present in
     // freshly written datasets.)
-    let p: PathBuf = path.into();
+    let p = Path::new(input);
     p.is_dir() && p.join("_versions").is_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheme_detection_matches_object_store_uris() {
+        for uri in [
+            "s3://bucket/data.lance",
+            "gs://analytics/events.lance",
+            "az://container/data.lance",
+            "file:///data/foo.lance",
+            "s3+http://host/bucket/data",
+        ] {
+            assert!(has_scheme(uri), "expected scheme in {uri:?}");
+        }
+    }
+
+    #[test]
+    fn scheme_detection_rejects_local_paths() {
+        for path in [
+            "/data/foo.lance",
+            "./relative/foo.lance",
+            "foo.lance",
+            "C:\\data\\foo.lance",
+            "",
+            "://missing-scheme",
+        ] {
+            assert!(!has_scheme(path), "did not expect scheme in {path:?}");
+        }
+    }
+
+    #[test]
+    fn scheme_qualified_input_dispatches_to_lance_without_touching_fs() {
+        // No filesystem access happens for scheme-qualified inputs; a bucket URI
+        // that obviously doesn't exist locally still resolves to `Lance`.
+        assert_eq!(
+            detect_format("s3://no-such-bucket/data.lance").unwrap(),
+            Format::Lance,
+        );
+    }
+
+    #[test]
+    fn scheme_less_nonexistent_local_path_is_unknown_format() {
+        let err = detect_format("/definitely/not/a/dataset/xyz").unwrap_err();
+        match err {
+            Error::UnknownFormat { path } => {
+                assert_eq!(path, "/definitely/not/a/dataset/xyz");
+            }
+            other => panic!("expected UnknownFormat, got {other:?}"),
+        }
+    }
 }

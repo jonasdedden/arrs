@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -30,22 +30,28 @@ const SIZE_CONCURRENCY: usize = 16;
 #[derive(Debug)]
 pub struct LanceDataset {
     inner: InnerLance,
-    origin: PathBuf,
+    origin: String,
     arrow_schema: SchemaRef,
 }
 
 impl LanceDataset {
-    pub async fn open(path: &Path, lance: Option<&LanceArgs>) -> Result<Self> {
-        let uri = path.to_string_lossy().into_owned();
-        let inner = InnerLance::open(&uri).await.map_err(|e| Error::LanceOpen {
-            path: path.to_path_buf(),
-            source: Box::new(e),
-        })?;
+    /// Open the Lance dataset at `input`. `input` is passed to Lance verbatim,
+    /// so it may be a local path (with or without a `file://` prefix) or an
+    /// object-store URI (`s3://…`, `gs://…`, `az://…`); credentials are taken
+    /// from the ambient environment. On failure the error carries `input` and
+    /// the underlying object-store cause.
+    pub async fn open(input: &str, lance: Option<&LanceArgs>) -> Result<Self> {
+        let inner = InnerLance::open(input)
+            .await
+            .map_err(|e| Error::LanceOpen {
+                path: input.to_string(),
+                source: Box::new(e),
+            })?;
         let inner = apply_checkout(inner, lance).await?;
         let arrow_schema: SchemaRef = Arc::new(ArrowSchema::from(inner.schema()));
         Ok(Self {
             inner,
-            origin: path.to_path_buf(),
+            origin: input.to_string(),
             arrow_schema,
         })
     }
@@ -153,7 +159,7 @@ async fn apply_checkout(mut ds: InnerLance, lance: Option<&LanceArgs>) -> Result
 
 #[async_trait]
 impl Dataset for LanceDataset {
-    fn origin(&self) -> &Path {
+    fn origin(&self) -> &str {
         &self.origin
     }
 

@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::Result;
 use crate::cli::{BinaryFormat, Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema};
@@ -10,7 +8,7 @@ use crate::projection;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    input: &Path,
+    input: &str,
     indices_raw: &str,
     format: Format,
     binary_format: BinaryFormat,

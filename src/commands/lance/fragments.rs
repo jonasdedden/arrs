@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
@@ -11,7 +10,7 @@ use crate::dataset::{self, FragmentInfo};
 use crate::error::Error;
 
 pub async fn run(
-    input: &Path,
+    input: &str,
     lance: &LanceArgs,
     verbose: bool,
     no_size: bool,
@@ -21,7 +20,7 @@ pub async fn run(
     let ds = dataset::open(input, Some(lance)).await?;
     let lance_caps = ds.lance().ok_or_else(|| Error::NotLance {
         command: "fragments",
-        path: input.to_path_buf(),
+        path: input.to_string(),
     })?;
 
     let fragments = lance_caps.list_fragments(!no_size).await?;

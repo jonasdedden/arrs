@@ -50,7 +50,7 @@ async fn collect_cat(
 ) -> arrs::Result<String> {
     let mut out: Vec<u8> = Vec::new();
     {
-        let first = dataset::open(&inputs[0], None).await?;
+        let first = dataset::open(inputs[0].to_str().unwrap(), None).await?;
         let s = first.arrow_schema();
         let proj = projection::resolve(&s, columns, exclude)?;
         let projected = project(&s, proj.as_deref());
@@ -62,7 +62,7 @@ async fn collect_cat(
         );
         w.start(&projected)?;
         for p in &inputs {
-            let ds = dataset::open(p, None).await?;
+            let ds = dataset::open(p.to_str().unwrap(), None).await?;
             let options = ScanOptions {
                 projection: proj.as_deref(),
                 filter: None,
@@ -83,7 +83,7 @@ async fn collect_head(
     format: Format,
     binary_format: BinaryFormat,
 ) -> arrs::Result<String> {
-    let ds = dataset::open(input, None).await?;
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
     let mut out: Vec<u8> = Vec::new();
@@ -124,7 +124,7 @@ async fn collect_tail(
     format: Format,
     binary_format: BinaryFormat,
 ) -> arrs::Result<String> {
-    let ds = dataset::open(input, None).await?;
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
     let rowcount = ds.count_rows(None).await?;
@@ -155,7 +155,7 @@ async fn collect_take(
     format: Format,
     binary_format: BinaryFormat,
 ) -> arrs::Result<String> {
-    let ds = dataset::open(input, None).await?;
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
     let rowcount = ds.count_rows(None).await?;
@@ -189,7 +189,7 @@ async fn collect_sample(
     use rand::prelude::*;
     use rand_chacha::ChaCha20Rng;
 
-    let ds = dataset::open(input, None).await?;
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
     let rowcount = ds.count_rows(None).await?;
@@ -217,7 +217,7 @@ async fn collect_sample(
 
 /// Scan `input` with a `--where` filter and return every matching row as
 /// JSONL. Mirrors what `cat --where` / `head --where` (large limit) produce.
-async fn collect_scan_where(input: &Path, filter: &str) -> arrs::Result<String> {
+async fn collect_scan_where(input: &str, filter: &str) -> arrs::Result<String> {
     let ds = dataset::open(input, None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
@@ -250,7 +250,7 @@ fn rowcount_is_5_for_simple_fixture() {
     runtime().block_on(async {
         let tmp = tempdir();
         let p = write_simple(&tmp, "simple").await;
-        let ds = dataset::open(&p, None).await.unwrap();
+        let ds = dataset::open(p.to_str().unwrap(), None).await.unwrap();
         assert_eq!(ds.count_rows(None).await.unwrap(), 5);
     });
 }
@@ -666,7 +666,7 @@ fn format_on_schema_errors() {
             columns: None,
             exclude_columns: None,
             command: Command::Schema {
-                input: std::path::PathBuf::from("does-not-matter"),
+                input: "does-not-matter".to_string(),
                 ty: arrs::cli::SchemaType::Arrow,
                 lance: arrs::cli::LanceArgs::default(),
             },
@@ -688,7 +688,7 @@ fn format_on_rowcount_errors() {
             columns: None,
             exclude_columns: None,
             command: Command::Rowcount {
-                input: std::path::PathBuf::from("does-not-matter"),
+                input: "does-not-matter".to_string(),
                 filter: FilterArg::default(),
                 lance: arrs::cli::LanceArgs::default(),
             },
@@ -764,7 +764,9 @@ fn where_number_predicate_filters_and_preserves_order() {
     runtime().block_on(async {
         let tmp = tempdir();
         let p = write_simple(&tmp, "s").await;
-        let out = collect_scan_where(&p, "id >= 3").await.unwrap();
+        let out = collect_scan_where(p.to_str().unwrap(), "id >= 3")
+            .await
+            .unwrap();
         assert_eq!(ids(&out), vec![3, 4, 5]);
     });
 }
@@ -774,7 +776,9 @@ fn where_string_predicate_filters_rows() {
     runtime().block_on(async {
         let tmp = tempdir();
         let p = write_simple(&tmp, "s").await;
-        let out = collect_scan_where(&p, "name = 'alice'").await.unwrap();
+        let out = collect_scan_where(p.to_str().unwrap(), "name = 'alice'")
+            .await
+            .unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 1);
         let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -788,7 +792,9 @@ fn where_empty_result_set_yields_no_rows() {
     runtime().block_on(async {
         let tmp = tempdir();
         let p = write_simple(&tmp, "s").await;
-        let out = collect_scan_where(&p, "id > 100").await.unwrap();
+        let out = collect_scan_where(p.to_str().unwrap(), "id > 100")
+            .await
+            .unwrap();
         assert_eq!(out.lines().count(), 0);
     });
 }
@@ -798,7 +804,7 @@ fn rowcount_with_where_uses_filtered_count() {
     runtime().block_on(async {
         let tmp = tempdir();
         let p = write_simple(&tmp, "s").await;
-        let ds = dataset::open(&p, None).await.unwrap();
+        let ds = dataset::open(p.to_str().unwrap(), None).await.unwrap();
         assert_eq!(ds.count_rows(Some("id >= 4")).await.unwrap(), 2);
         // Empty result set counts as zero, not an error.
         assert_eq!(ds.count_rows(Some("id > 100")).await.unwrap(), 0);
@@ -810,7 +816,7 @@ fn invalid_where_predicate_on_scan_errors() {
     runtime().block_on(async {
         let tmp = tempdir();
         let p = write_simple(&tmp, "s").await;
-        let ds = dataset::open(&p, None).await.unwrap();
+        let ds = dataset::open(p.to_str().unwrap(), None).await.unwrap();
         let options = ScanOptions {
             projection: None,
             filter: Some("not_a_column > 1"),
@@ -829,7 +835,7 @@ fn invalid_where_predicate_on_rowcount_errors() {
     runtime().block_on(async {
         let tmp = tempdir();
         let p = write_simple(&tmp, "s").await;
-        let ds = dataset::open(&p, None).await.unwrap();
+        let ds = dataset::open(p.to_str().unwrap(), None).await.unwrap();
         let err = ds
             .count_rows(Some("this is not sql ((("))
             .await
@@ -847,7 +853,7 @@ fn take_with_where_is_rejected() {
             columns: None,
             exclude_columns: None,
             command: Command::Take {
-                input: std::path::PathBuf::from("does-not-matter"),
+                input: "does-not-matter".to_string(),
                 indices: "0".to_string(),
                 filter: FilterArg {
                     predicate: Some("id > 1".to_string()),
