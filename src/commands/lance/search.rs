@@ -22,7 +22,7 @@ pub enum QuerySource<'a> {
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    input: &Path,
+    input: &str,
     column: &str,
     source: QuerySource<'_>,
     k: usize,
@@ -39,7 +39,7 @@ pub async fn run(
     let ds = dataset::open(input, Some(lance)).await?;
     let lance_caps = ds.lance().ok_or_else(|| Error::NotLance {
         command: "search",
-        path: input.to_path_buf(),
+        path: input.to_string(),
     })?;
 
     // `_distance` is always appended by the search, so tolerate the user naming
