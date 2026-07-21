@@ -527,8 +527,7 @@ fn index_stats_counts_change_when_rows_appended_after_indexing() {
         // Build the BTree-indexed fixture, then append rows *after* the index
         // exists so they land as unindexed.
         let path = build_fixture_with_index(&tmp, "ds").await;
-        let uri = path.to_string_lossy().into_owned();
-        let mut ds = LanceInner::open(uri.as_str()).await.unwrap();
+        let mut ds = LanceInner::open(path.as_str()).await.unwrap();
         let iter = RecordBatchIterator::new(vec![Ok(batch(vec![5, 6], vec!["e", "f"]))], schema());
         ds.append(iter, None).await.unwrap();
 
@@ -676,7 +675,7 @@ fn index_stats_empty_index_has_undefined_coverage() {
         .await
         .unwrap();
 
-        let ds = dataset::open(&path, None).await.unwrap();
+        let ds = dataset::open(&uri, None).await.unwrap();
         let lance = ds.lance().unwrap();
 
         let stats = lance.index_stats().await.unwrap();

@@ -260,7 +260,7 @@ pub enum Command {
 
     /// (Lance only) Print per-index coverage: indexed vs unindexed row counts.
     IndexStats {
-        input: PathBuf,
+        input: String,
         #[command(flatten)]
         lance: LanceArgs,
     },

@@ -682,7 +682,6 @@ fn vector_column_dim(schema: &ArrowSchema, column: &str) -> Result<usize> {
             data_type: other.to_string(),
         }),
     }
-    }
 }
 
 /// Extract the `index_type` field from a Lance statistics JSON value, falling
