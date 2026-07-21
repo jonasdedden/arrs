@@ -22,7 +22,7 @@
 //! matches what Lance's scanner returns natively and is documented in the
 //! README.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 
@@ -80,27 +80,39 @@ fn classify<'a>(token: &'a str, top_level: &HashSet<&str>) -> Token<'a> {
     }
 }
 
+/// Where an already-seen entry first came from. Only a repeated *explicit*
+/// entry is a `DuplicateColumn` error; overlaps involving a glob-introduced
+/// entry dedupe silently, so `emb_1,emb_*` and `emb_*,emb_1` behave identically
+/// ("appears once at its first position").
+#[derive(Clone, Copy, PartialEq)]
+enum Origin {
+    Explicit,
+    Glob,
+}
+
 fn resolve_include(schema: &SchemaRef, incl: &[String]) -> Result<Vec<String>> {
     let all: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
     let top_level: HashSet<&str> = all.iter().copied().collect();
 
     let mut out: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashMap<String, Origin> = HashMap::new();
 
     for token in incl {
         match classify(token, &top_level) {
-            Token::TopLevel(name) => push_explicit(name.to_string(), &mut out, &mut seen)?,
+            Token::TopLevel(name) => push_explicit(name, &mut out, &mut seen)?,
             Token::Path(path) => {
                 validate_path(schema, path)?;
-                push_explicit(path.to_string(), &mut out, &mut seen)?;
+                push_explicit(path, &mut out, &mut seen)?;
             }
             Token::Glob(pattern) => {
                 let mut matched = false;
                 for col in &all {
                     if wildcard_match(pattern, col) {
                         matched = true;
-                        // Glob overlaps dedupe silently, keeping first position.
-                        if seen.insert((*col).to_string()) {
+                        // Glob overlaps (with an earlier glob or explicit name)
+                        // dedupe silently, keeping the first position.
+                        if !seen.contains_key(*col) {
+                            seen.insert((*col).to_string(), Origin::Glob);
                             out.push((*col).to_string());
                         }
                     }
@@ -124,14 +136,24 @@ fn resolve_include(schema: &SchemaRef, incl: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// A duplicate *explicit* token (exact name or path named twice) is an error,
-/// preserving the historical `DuplicateColumn` behavior.
-fn push_explicit(entry: String, out: &mut Vec<String>, seen: &mut HashSet<String>) -> Result<()> {
-    if !seen.insert(entry.clone()) {
-        return Err(Error::DuplicateColumn(entry));
+/// Add an explicit (exact-name or path) entry. Naming the same entry explicitly
+/// twice is a `DuplicateColumn` error; but if it was already introduced by a
+/// glob it is silently skipped (it is already present at the glob's position),
+/// so overlap is order-insensitive.
+fn push_explicit(
+    entry: &str,
+    out: &mut Vec<String>,
+    seen: &mut HashMap<String, Origin>,
+) -> Result<()> {
+    match seen.get(entry) {
+        Some(Origin::Explicit) => Err(Error::DuplicateColumn(entry.to_string())),
+        Some(Origin::Glob) => Ok(()),
+        None => {
+            seen.insert(entry.to_string(), Origin::Explicit);
+            out.push(entry.to_string());
+            Ok(())
+        }
     }
-    out.push(entry);
-    Ok(())
 }
 
 fn resolve_exclude(schema: &SchemaRef, excl: &[String]) -> Result<Vec<String>> {
@@ -491,14 +513,35 @@ mod tests {
     }
 
     #[test]
-    fn glob_overlap_with_explicit_dedupes() {
+    fn glob_overlap_with_explicit_dedupes_explicit_first() {
         let s = nested_schema();
         // `emb_1` matched by both the explicit name and the glob: appears once,
-        // at first position.
+        // at its first position (the explicit one, index 0).
         let got = resolve(&s, Some(&v(&["emb_1", "emb_*"])), None)
             .unwrap()
             .unwrap();
         assert_eq!(got, v(&["emb_1", "emb_0", "emb_2"]));
+    }
+
+    #[test]
+    fn glob_overlap_with_explicit_dedupes_glob_first() {
+        let s = nested_schema();
+        // Reverse order must not error: the glob introduces `emb_1`, and the
+        // later explicit `emb_1` dedupes silently at its glob position.
+        let got = resolve(&s, Some(&v(&["emb_*", "emb_1"])), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, v(&["emb_0", "emb_1", "emb_2"]));
+    }
+
+    #[test]
+    fn explicit_named_twice_still_errors() {
+        let s = nested_schema();
+        // Two *explicit* mentions remain a duplicate error.
+        assert!(matches!(
+            resolve(&s, Some(&v(&["emb_1", "emb_1"])), None),
+            Err(Error::DuplicateColumn(_))
+        ));
     }
 
     #[test]

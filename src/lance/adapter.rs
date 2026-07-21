@@ -878,6 +878,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::cast::AsArray as _;
+    use arrow_array::types::Int64Type;
+    use arrow_array::{Int64Array, StringArray};
+    use arrow_schema::{Field, Fields};
+
     use super::*;
 
     /// Shorthand: build the expected UTC instant from components.
@@ -966,5 +973,43 @@ mod tests {
     #[test]
     fn rejects_empty() {
         assert!(matches!(parse_as_of(""), Err(Error::InvalidAsOf(_))));
+    }
+
+    /// `extract_column` must propagate an ancestor struct's null mask onto the
+    /// extracted leaf (a null parent yields a null leaf). This path is not
+    /// reachable through Lance — which drops struct-level validity at write time
+    /// — so it is exercised directly on an in-memory batch.
+    #[test]
+    fn extract_column_propagates_parent_nulls() {
+        let user_fields = Fields::from(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+        ]);
+        // Leaf arrays have NO nulls of their own.
+        let user = StructArray::new(
+            user_fields.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![10, 20, 30])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+            // Parent `user` struct is null in the middle row.
+            Some(NullBuffer::from(vec![true, false, true])),
+        );
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "user",
+            DataType::Struct(user_fields),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(user)]).unwrap();
+
+        let leaf = extract_column(&batch, "user.id").unwrap();
+        let ids = leaf.as_primitive::<Int64Type>();
+        assert_eq!(ids.len(), 3);
+        assert!(!ids.is_null(0));
+        assert_eq!(ids.value(0), 10);
+        // Null parent row -> null leaf, even though the child array had a value.
+        assert!(ids.is_null(1));
+        assert!(!ids.is_null(2));
+        assert_eq!(ids.value(2), 30);
     }
 }

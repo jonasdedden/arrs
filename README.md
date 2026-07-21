@@ -201,7 +201,9 @@ by `schema --type arrow` (which lists a `meta.user.id` field). Projecting a
 whole struct column instead (e.g. `--columns meta`) keeps it nested:
 `{"meta": {"user": {"id": 10, "name": "alice"}, "source": "web"}}`.
 `schema --type physical` shows the Lance-native pruned field tree rather than
-the flat view.
+the flat view. Naming both a struct and a leaf inside it (e.g.
+`--columns meta,meta.user.id`) emits the whole struct *and* a duplicate flat
+`meta.user.id` column, and `head`/`cat`/`take` agree on that shape.
 
 **Excluding a nested path** prunes that leaf (or subtree) and emits the struct's
 surviving leaves as flat dotted columns: `--exclude-columns meta.user.id` yields

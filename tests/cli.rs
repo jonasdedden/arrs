@@ -747,6 +747,38 @@ fn nested_path_through_cat_flattens_to_dotted_columns() {
 }
 
 #[test]
+fn parent_and_leaf_overlap_agree_scan_and_take() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let want = cols(&["meta", "meta.user.id"]);
+        // Scan path (cat).
+        let cat = collect_cat(
+            vec![p.clone()],
+            Format::Jsonl,
+            BinaryFormat::None,
+            Some(&want),
+            None,
+        )
+        .await
+        .unwrap();
+        // Take path.
+        let take = collect_take_cols(&p, "0", Some(&want), None).await.unwrap();
+
+        let cat0 = cat.lines().next().unwrap();
+        let take0 = take.lines().next().unwrap();
+        // Whole struct + duplicate flat leaf, and both paths agree.
+        assert_eq!(keys(cat0), cols(&["meta", "meta.user.id"]));
+        assert_eq!(keys(take0), cols(&["meta", "meta.user.id"]));
+        let cv: serde_json::Value = serde_json::from_str(cat0).unwrap();
+        let tv: serde_json::Value = serde_json::from_str(take0).unwrap();
+        assert_eq!(cv, tv);
+        assert_eq!(cv["meta.user.id"], 10);
+        assert_eq!(cv["meta"]["user"]["id"], 10);
+    });
+}
+
+#[test]
 fn nested_and_glob_combined_through_cat() {
     runtime().block_on(async {
         let tmp = tempdir();
