@@ -150,6 +150,37 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             lance::fragments::run(&input, &lance_args, verbose, no_size, format, binary_format)
                 .await
         }
+        Command::Search {
+            input,
+            column,
+            vector,
+            vector_file,
+            k,
+            nprobes,
+            refine_factor,
+            lance,
+        } => {
+            // clap's `query_vector` group guarantees exactly one of these is set.
+            let source = match (vector.as_deref(), vector_file.as_deref()) {
+                (Some(inline), _) => lance::search::QuerySource::Inline(inline),
+                (None, Some(path)) => lance::search::QuerySource::File(path),
+                (None, None) => unreachable!("clap requires one of --vector/--vector-file"),
+            };
+            lance::search::run(
+                &input,
+                &column,
+                source,
+                k,
+                nprobes,
+                refine_factor,
+                format,
+                binary_format,
+                columns,
+                exclude,
+                &lance,
+            )
+            .await
+        }
     }
 }
 

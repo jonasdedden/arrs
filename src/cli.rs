@@ -1,4 +1,6 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 pub enum Format {
@@ -207,6 +209,37 @@ pub enum Command {
         /// remote or huge datasets. The `size` column is left empty.
         #[arg(long = "no-size")]
         no_size: bool,
+        #[command(flatten)]
+        lance: LanceArgs,
+    },
+
+    /// (Lance only) Nearest-neighbor vector search; appends a `_distance` column.
+    ///
+    /// Uses an ANN index on the column when present, otherwise falls back to
+    /// flat (brute-force) KNN and prints a note to stderr. The output honours
+    /// the global `--columns`/`--exclude-columns` projection, with `_distance`
+    /// always included.
+    #[command(group(ArgGroup::new("query_vector").required(true).args(["vector", "vector_file"])))]
+    Search {
+        input: String,
+        /// Vector column to search (a fixed-size-list-of-float column).
+        #[arg(long)]
+        column: String,
+        /// Query vector as an inline JSON array, e.g. '[0.1, 0.2, 0.3]'.
+        #[arg(long)]
+        vector: Option<String>,
+        /// Read the query vector (a JSON array) from a file, or '-' for stdin.
+        #[arg(long = "vector-file")]
+        vector_file: Option<PathBuf>,
+        /// Number of nearest neighbors to return.
+        #[arg(short = 'k', default_value_t = 10)]
+        k: usize,
+        /// IVF partitions to probe (index tuning; no effect without an index).
+        #[arg(long)]
+        nprobes: Option<usize>,
+        /// Refine factor for re-ranking search results (index tuning).
+        #[arg(long = "refine-factor")]
+        refine_factor: Option<u32>,
         #[command(flatten)]
         lance: LanceArgs,
     },

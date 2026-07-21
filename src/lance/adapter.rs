@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use arrow_array::Float32Array;
 use arrow_array::RecordBatch;
 use arrow_array::RecordBatchReader;
-use arrow_schema::{Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use futures::{StreamExt, TryStreamExt};
@@ -16,7 +17,7 @@ use crate::Result;
 use crate::cli::LanceArgs;
 use crate::dataset::{
     BatchStream, BranchInfo, Dataset, FragmentInfo, IndexInfo, LanceCapabilities, ScanOptions,
-    TagInfo, VersionInfo,
+    TagInfo, VectorSearchParams, VectorSearchResult, VersionInfo,
 };
 use crate::error::Error;
 
@@ -508,6 +509,112 @@ impl LanceCapabilities for LanceDataset {
         }
 
         Ok(out)
+    }
+
+    async fn search(&self, params: &VectorSearchParams<'_>) -> Result<VectorSearchResult> {
+        // Validate the target column ourselves so the error messages are precise
+        // (`query has 512 dims, column embedding has 768`) rather than relying on
+        // Lance's internal wording.
+        let dim = vector_column_dim(&self.arrow_schema, params.column)?;
+        if params.vector.len() != dim {
+            return Err(Error::VectorDimMismatch {
+                query: params.vector.len(),
+                column: params.column.to_string(),
+                column_dims: dim,
+            });
+        }
+
+        // Lance coerces from a Float32Array to the column's f16/f32/f64 element
+        // type internally, so f32 is the interchange type for the query vector.
+        let query = Float32Array::from(params.vector.to_vec());
+
+        let mut scanner = self.inner.scan();
+        scanner
+            .nearest(params.column, &query, params.k)
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        if let Some(n) = params.nprobes {
+            scanner.nprobes(n);
+        }
+        if let Some(factor) = params.refine_factor {
+            scanner.refine(factor);
+        }
+        if let Some(cols) = params.projection {
+            // `_distance` is force-appended by Lance's scoring autoprojection even
+            // when an explicit projection is given, so it is always in the output.
+            scanner
+                .project(cols)
+                .map_err(|e| Error::Lance(Box::new(e)))?;
+        }
+
+        let used_index = self.column_has_ann_index(params.column).await?;
+
+        // `schema()` reflects the projection plus the trailing `_distance` column.
+        let schema = scanner
+            .schema()
+            .await
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        let stream = scanner
+            .try_into_stream()
+            .await
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        let stream = stream.map(|r| r.map_err(|e| Error::Lance(Box::new(e))));
+
+        Ok(VectorSearchResult {
+            schema,
+            stream: Box::pin(stream),
+            used_index,
+        })
+    }
+}
+
+impl LanceDataset {
+    /// True when at least one index covers `column`. Vector columns only ever
+    /// carry ANN indices, so index coverage is a reliable "is this indexed"
+    /// signal for the flat-KNN stderr note.
+    async fn column_has_ann_index(&self, column: &str) -> Result<bool> {
+        let indices = self
+            .inner
+            .load_indices()
+            .await
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        let schema = self.inner.schema();
+        Ok(indices.iter().any(|m| {
+            m.fields
+                .iter()
+                .filter_map(|id| schema.field_by_id(*id))
+                .any(|f| f.name == column)
+        }))
+    }
+}
+
+/// Resolve `column` to the width of its `FixedSizeList`-of-float type, erroring
+/// precisely when the column is missing or is not a float vector column.
+fn vector_column_dim(schema: &ArrowSchema, column: &str) -> Result<usize> {
+    let field = schema.field_with_name(column).map_err(|_| {
+        let available = schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Error::UnknownColumn {
+            name: column.to_string(),
+            available,
+        }
+    })?;
+    match field.data_type() {
+        DataType::FixedSizeList(inner, size)
+            if matches!(
+                inner.data_type(),
+                DataType::Float16 | DataType::Float32 | DataType::Float64
+            ) =>
+        {
+            Ok(*size as usize)
+        }
+        other => Err(Error::NotVectorColumn {
+            column: column.to_string(),
+            data_type: other.to_string(),
+        }),
     }
 }
 

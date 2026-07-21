@@ -50,6 +50,7 @@ cargo run --release -- <command> [args…]
 | `tags`     | (Lance) List tags across every branch.                              |
 | `indices`  | (Lance) List indices defined on the dataset.                        |
 | `fragments` | (Lance) List fragments with row, deletion, file, and size info.    |
+| `search`   | (Lance) Nearest-neighbor vector search; appends a `_distance` column.|
 
 ## Remote datasets
 
@@ -206,6 +207,50 @@ arrs fragments --verbose dataset.lance             # include data file paths in 
 arrs fragments --no-size dataset.lance             # skip size lookups (fast/remote datasets)
 arrs fragments --format jsonl dataset.lance        # machine-readable, raw byte sizes
 ```
+
+### Vector search
+
+`arrs search` runs a nearest-neighbor query against a vector column (an Arrow
+`FixedSizeList` of `f16`/`f32`/`f64`) and returns the `k` closest rows ordered
+by distance. A `_distance` column is appended to the output, so every format
+(`jsonl`, `csv`, `table`) works unchanged. When the column has an ANN index
+(e.g. `IVF_PQ`) it is used automatically; otherwise Lance falls back to flat
+(brute-force) KNN and a note is printed to stderr.
+
+The query vector is a JSON array of numbers, supplied inline, from a file, or on
+stdin. Its length must match the column width, and it is cast to the column's
+element type for you.
+
+| Flag                   | Meaning                                                          |
+|------------------------|------------------------------------------------------------------|
+| `--column <name>`      | Vector column to search (required).                              |
+| `--vector '[...]'`     | Inline JSON array query vector.                                  |
+| `--vector-file <path>` | Read the query vector (JSON array) from a file, or `-` for stdin.|
+| `-k <N>`               | Number of neighbors to return (default `10`).                    |
+| `--nprobes <N>`        | IVF partitions to probe (index tuning; no effect when unindexed).|
+| `--refine-factor <N>`  | Re-rank the top `k * N` candidates for better recall.            |
+
+Exactly one of `--vector` / `--vector-file` is required. The global
+`--columns` / `--exclude-columns` projection composes with the search, and
+`_distance` is always included.
+
+```sh
+# Top-10 nearest rows to an inline query vector.
+arrs search --column embedding --vector '[0.1, 0.2, 0.3]' -k 10 ds.lance
+
+# Query vector from a file, or piped in on stdin.
+arrs search --column embedding --vector-file query.json -k 10 ds.lance
+cat query.json | arrs search --column embedding --vector-file - -k 10 ds.lance
+
+# Tune the ANN search and re-rank the candidates.
+arrs search --column embedding --vector-file q.json -k 10 --nprobes 32 --refine-factor 5 ds.lance
+
+# Project only the columns you care about (plus the appended _distance).
+arrs search --column embedding --vector-file q.json -k 10 --columns id,title ds.lance
+```
+
+> Full-text search (`--query` against inverted/FTS indices, emitting `_score`)
+> is planned as a follow-up.
 
 ### Binary columns
 
