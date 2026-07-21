@@ -192,7 +192,7 @@ fn list_indices_finds_btree_index() {
 
 /// Build a dataset with three fragments (one per append) and, when `delete` is
 /// set, tombstone a single row so exactly one fragment carries a deletion file.
-async fn build_fragmented(tmp: &TempDir, name: &str, delete: bool) -> PathBuf {
+async fn build_fragmented(tmp: &TempDir, name: &str, delete: bool) -> String {
     let path = tmp.path().join(name);
     let uri = path.to_string_lossy().into_owned();
 
@@ -209,7 +209,7 @@ async fn build_fragmented(tmp: &TempDir, name: &str, delete: bool) -> PathBuf {
         // `id = 3` lives in the second fragment.
         ds.delete("id = 3").await.unwrap();
     }
-    path
+    uri
 }
 
 #[test]
@@ -414,7 +414,7 @@ fn open_via_file_uri_scheme_matches_local_path() {
 
         let ds = dataset::open(&file_uri, None).await.unwrap();
         assert_eq!(ds.origin(), file_uri);
-        assert_eq!(ds.count_rows().await.unwrap(), 4);
+        assert_eq!(ds.count_rows(None).await.unwrap(), 4);
     });
 }
 

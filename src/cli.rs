@@ -198,7 +198,7 @@ pub enum Command {
 
     /// (Lance only) List fragments with row, deletion, file, and size info.
     Fragments {
-        input: PathBuf,
+        input: String,
         /// Show each fragment's data file paths in table output (they are
         /// always included in jsonl/csv output).
         #[arg(long)]
