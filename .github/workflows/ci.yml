@@ -55,6 +55,30 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
+    # CI-only optimization knobs. This is a *merge gate*: its job is to prove
+    # the wheel compiles and links under the release configuration
+    # (debug-assertions/overflow-checks off, `--release` codepath), NOT to
+    # produce a shippable artifact. So we keep `--release` but turn the
+    # optimizer down — opt-level=0 + many codegen-units makes the whole
+    # lance/arrow dep tree compile at roughly debug speed instead of paying for
+    # opt-level=3 codegen on ~545 crates (~18 min cold → a few min).
+    #
+    # These MUST live at job level, not on the build step: Swatinem/rust-cache
+    # runs inside setup-toolchain (earlier than the build step) and folds any
+    # CARGO_*-prefixed env it can see into its cache key. Job-level env is
+    # visible to that step, so the cache fingerprint tracks opt-level=0 and this
+    # job stops exact-hitting the stale opt-level=3 cache — it saves and later
+    # restores its own (smaller) unoptimized cache, unlocking the warm path.
+    #
+    # Shipped wheels are built by release.yml, which does NOT set these and
+    # therefore keeps the default release profile (opt-level=3). Do not add
+    # these overrides there.
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "0"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+      # Redundant with the release-profile default (debug info off) — kept as
+      # future-proofing so lowered opt-level can never drag debug info in.
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-toolchain
