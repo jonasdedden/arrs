@@ -657,6 +657,27 @@ fn list_fragments_respects_version_checkout() {
 }
 
 #[test]
+fn manifest_version_reflects_checkout() {
+    // Feeds the `stat` command's `format` line; must track the checked-out
+    // version rather than always reporting the latest.
+    runtime().block_on(async {
+        let tmp = tempdir();
+        // build_fixture writes v1, appends v2, then appends v3 on main.
+        let path = build_fixture(&tmp, "ds").await;
+
+        let ds = dataset::open(&path, None).await.unwrap();
+        assert_eq!(ds.lance().unwrap().manifest_version(), 3);
+
+        let at_v1 = LanceArgs {
+            version: Some(1),
+            ..LanceArgs::default()
+        };
+        let ds = dataset::open(&path, Some(&at_v1)).await.unwrap();
+        assert_eq!(ds.lance().unwrap().manifest_version(), 1);
+    });
+}
+
+#[test]
 fn index_stats_empty_index_has_undefined_coverage() {
     runtime().block_on(async {
         let tmp = tempdir();

@@ -85,6 +85,11 @@ pub trait Dataset: Send + Sync + Debug {
 /// Lance-specific operations exposed beyond the format-agnostic `Dataset` trait.
 #[async_trait]
 pub trait LanceCapabilities: Send + Sync {
+    /// Manifest (dataset) version number of the currently checked-out version.
+    /// Pure metadata already resident after `open`, so this is infallible and
+    /// synchronous. Used by the `stat` command's `format` line.
+    fn manifest_version(&self) -> u64;
+
     /// List versions on `branch` (defaults to `main` when `None`). When
     /// `tagged_only` is true, drops untagged versions from the result.
     async fn list_versions(

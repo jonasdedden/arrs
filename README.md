@@ -46,6 +46,7 @@ cargo run --release -- <command> [args…]
 | `sample`   | Print `N` random rows, no replacement. `--seed` for reproducibility.|
 | `stats`    | Per-column summary statistics (a `df.describe()` for datasets).     |
 | `freq`     | Value counts for a column: each distinct value, its count and percent.|
+| `stat`     | (Lance) One-screen dataset health summary (metadata-only).          |
 | `schema`   | Print the logical (Arrow) or physical (Lance-native) schema.        |
 | `versions` | (Lance) List versions of the dataset.                               |
 | `branches` | (Lance) List branches of the dataset.                               |
@@ -95,7 +96,7 @@ denied) are surfaced with the offending URI and the underlying cause.
 
 | Flag                        | Default | Purpose                                                     |
 |-----------------------------|---------|-------------------------------------------------------------|
-| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`, `jsonl` everywhere else. |
+| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`/`stat`, `jsonl` everywhere else. |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
 | `--columns <a,b,…>`         | –       | Comma-separated include list. Supports glob patterns and nested paths (see below). User order is preserved. |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Supports the same patterns/paths. Takes precedence over `--columns`.|
@@ -412,6 +413,78 @@ arrs fragments --verbose dataset.lance             # include data file paths in 
 arrs fragments --no-size dataset.lance             # skip size lookups (fast/remote datasets)
 arrs fragments --format jsonl dataset.lance        # machine-readable, raw byte sizes
 ```
+
+### Dataset health with `stat`
+
+`arrs stat` answers "how is this dataset doing?" on one screen. Where `stats`
+(plural) scans the data for a per-column `df.describe()`, `stat` (singular, after
+`stat(1)`) reads only Lance manifest metadata — so it stays instant no matter how
+large the dataset is and never touches the data files (beyond summing their
+sizes). All the underlying lookups (fragments, versions, branches, tags, indices)
+run concurrently. It honours the `--branch`/`--version`/`--tag` selectors: the
+row/fragment/size/index figures reflect the checked-out version, and the version
+count is scoped to the selected branch.
+
+```
+$ arrs stat sample.lance
++--------------+---------------------------------------+
+| metric       | value                                 |
++======================================================+
+| path         | sample.lance                          |
+| format       | lance (manifest version 4)            |
+| rows         | 9                                     |
+| deleted rows | 0  (0.0%)                             |
+| columns      | 7                                     |
+| fragments    | 3  (min 3 rows, max 3 rows, median 3) |
+| data size    | 6.2 KiB                               |
+| versions     | 4  (latest 2026-07-21T22:53:12Z)      |
+| branches     | 2                                     |
+| tags         | 2                                     |
+| indices      | 1  (idx_id BTree)                     |
++--------------+---------------------------------------+
+```
+
+When the fragment spread or deleted-row ratio suggests it, a conservative note is
+appended in table mode, e.g. `note: many small fragments; compaction would likely
+help`. The thresholds are deliberately cautious: a median fragment under 100k rows
+with 100+ fragments, and/or a deleted-row ratio of 10% or more.
+
+```sh
+arrs stat dataset.lance                    # health summary of main's latest version
+arrs stat --branch dev dataset.lance       # summary of the dev branch tip
+arrs stat --version 3 dataset.lance        # summary as of version 3
+arrs stat --no-size dataset.lance          # skip size lookups (fast/remote datasets)
+arrs stat --format jsonl dataset.lance     # one stable-schema JSON object (raw numbers)
+```
+
+`--format jsonl` emits a single object with raw numeric values (no human
+formatting) and a **stable field set** for scripting:
+
+| Field                      | Type          | Meaning                                                              |
+|----------------------------|---------------|----------------------------------------------------------------------|
+| `path`                     | string        | Input path/URI the dataset was opened from.                          |
+| `format`                   | string        | Always `"lance"`.                                                     |
+| `manifest_version`         | number        | Checked-out manifest (dataset) version.                              |
+| `rows`                     | number        | Live rows (`physical_rows` − `deleted_rows`).                        |
+| `physical_rows`            | number        | Rows physically stored, ignoring deletions.                          |
+| `deleted_rows`             | number        | Tombstoned (soft-deleted) rows.                                      |
+| `deleted_ratio`            | number        | `deleted_rows / physical_rows` in `0.0..=1.0` (`0` when empty).      |
+| `columns`                  | number        | Column count of the (Arrow) schema.                                 |
+| `fragments`                | number        | Fragment count.                                                     |
+| `fragment_min_rows`        | number\|null  | Smallest fragment's physical rows (`null` with no fragments).        |
+| `fragment_max_rows`        | number\|null  | Largest fragment's physical rows (`null` with no fragments).         |
+| `fragment_median_rows`     | number\|null  | Median physical rows/fragment, rounded up on ties (`null` if empty). |
+| `data_size_bytes`          | number\|null  | Summed data-file bytes; `null` under `--no-size`.                    |
+| `versions`                 | number        | Version count on the selected branch.                               |
+| `latest_version_timestamp` | string\|null  | RFC 3339 UTC timestamp of the latest version (`null` if none).       |
+| `branches`                 | number        | Branch count (dataset-wide).                                        |
+| `tags`                     | number        | Tag count (dataset-wide).                                           |
+| `num_indices`              | number        | Index count on the checked-out version.                             |
+| `indices`                  | array         | `{ "name", "type" }` objects, one per index.                        |
+| `compaction_hint`          | string\|null  | The advisory note (as above), or `null` when nothing stands out.     |
+
+`--format csv` mirrors the table's human-readable `metric,value` pairs (use
+`jsonl` when you want the raw numbers).
 
 ### Vector search
 
