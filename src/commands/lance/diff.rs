@@ -17,12 +17,13 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use arrow_schema::{Field, SchemaRef};
+use arrow_schema::SchemaRef;
 use serde_json::{Value, json};
 
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
 use crate::commands::Outcome;
+use crate::commands::diff_common::{SchemaDelta, build_schema_delta};
 use crate::dataset::{self, FragmentInfo, IndexInfo, MAIN_BRANCH, VersionInfo};
 use crate::error::Error;
 
@@ -182,15 +183,6 @@ struct RowDelta {
     deleted: u64,
 }
 
-struct SchemaDelta {
-    /// `(name, type_label)` for columns present only in `to`.
-    added: Vec<(String, String)>,
-    /// `(name, type_label)` for columns present only in `from`.
-    removed: Vec<(String, String)>,
-    /// `(name, from_label, to_label)` for columns whose type/nullability changed.
-    retyped: Vec<(String, String, String)>,
-}
-
 struct FragmentDelta {
     /// Fragment ids present only in `to`.
     added: Vec<u64>,
@@ -269,54 +261,6 @@ fn build_row_delta(from: &[FragmentInfo], to: &[FragmentInfo]) -> RowDelta {
     }
 }
 
-/// A compact type label that also encodes nullability (`Int32` vs `Int32?`), so
-/// a pure nullability change registers as a retype.
-fn type_label(field: &Field) -> String {
-    format!(
-        "{}{}",
-        field.data_type(),
-        if field.is_nullable() { "?" } else { "" }
-    )
-}
-
-fn build_schema_delta(from: &SchemaRef, to: &SchemaRef) -> SchemaDelta {
-    let from_fields: BTreeMap<&str, &Field> = from
-        .fields()
-        .iter()
-        .map(|f| (f.name().as_str(), f.as_ref()))
-        .collect();
-    let to_fields: BTreeMap<&str, &Field> = to
-        .fields()
-        .iter()
-        .map(|f| (f.name().as_str(), f.as_ref()))
-        .collect();
-
-    let mut added = Vec::new();
-    let mut retyped = Vec::new();
-    for (name, tf) in &to_fields {
-        match from_fields.get(name) {
-            None => added.push((name.to_string(), type_label(tf))),
-            Some(ff) => {
-                let (fl, tl) = (type_label(ff), type_label(tf));
-                if fl != tl {
-                    retyped.push((name.to_string(), fl, tl));
-                }
-            }
-        }
-    }
-    let removed: Vec<(String, String)> = from_fields
-        .iter()
-        .filter(|(name, _)| !to_fields.contains_key(*name))
-        .map(|(name, ff)| (name.to_string(), type_label(ff)))
-        .collect();
-
-    SchemaDelta {
-        added,
-        removed,
-        retyped,
-    }
-}
-
 fn build_fragment_delta(from: &[FragmentInfo], to: &[FragmentInfo]) -> FragmentDelta {
     let from_by_id: BTreeMap<u64, &FragmentInfo> = from.iter().map(|f| (f.id, f)).collect();
     let to_by_id: BTreeMap<u64, &FragmentInfo> = to.iter().map(|f| (f.id, f)).collect();
@@ -383,9 +327,7 @@ impl DiffReport {
     /// True when the two versions are content-identical: no schema, fragment,
     /// index or row-level change. Drives the `diff(1)` exit code (0 vs 1).
     fn is_identical(&self) -> bool {
-        self.schema.added.is_empty()
-            && self.schema.removed.is_empty()
-            && self.schema.retyped.is_empty()
+        self.schema.is_empty()
             && self.fragments.added.is_empty()
             && self.fragments.removed.is_empty()
             && self.fragments.rewritten.is_empty()
@@ -418,22 +360,11 @@ impl DiffReport {
         writeln!(out)?;
 
         // Schema.
-        let schema_changed = !(self.schema.added.is_empty()
-            && self.schema.removed.is_empty()
-            && self.schema.retyped.is_empty());
-        if schema_changed {
-            writeln!(out, "Schema changes:")?;
-            for (name, ty) in &self.schema.added {
-                writeln!(out, "  + {name}: {ty}")?;
-            }
-            for (name, ty) in &self.schema.removed {
-                writeln!(out, "  - {name}: {ty}")?;
-            }
-            for (name, from_ty, to_ty) in &self.schema.retyped {
-                writeln!(out, "  ~ {name}: {from_ty} -> {to_ty}")?;
-            }
-        } else {
+        if self.schema.is_empty() {
             writeln!(out, "Schema changes: none")?;
+        } else {
+            writeln!(out, "Schema changes:")?;
+            self.schema.write_rows(&mut *out)?;
         }
         writeln!(out)?;
 
@@ -491,26 +422,7 @@ impl DiffReport {
     }
 
     fn to_json(&self) -> Value {
-        let schema = json!({
-            "added": self
-                .schema
-                .added
-                .iter()
-                .map(|(name, ty)| json!({ "name": name, "type": ty }))
-                .collect::<Vec<_>>(),
-            "removed": self
-                .schema
-                .removed
-                .iter()
-                .map(|(name, ty)| json!({ "name": name, "type": ty }))
-                .collect::<Vec<_>>(),
-            "retyped": self
-                .schema
-                .retyped
-                .iter()
-                .map(|(name, f, t)| json!({ "name": name, "from": f, "to": t }))
-                .collect::<Vec<_>>(),
-        });
+        let schema = self.schema.to_json();
         let versions = self
             .versions
             .iter()
@@ -636,42 +548,6 @@ mod tests {
         assert_eq!(d.added, 3);
         assert_eq!(d.deleted, 0);
         assert_eq!(d.to_rows - d.from_rows, 3);
-    }
-
-    #[test]
-    fn schema_delta_detects_add_remove_retype() {
-        let from = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("gone", DataType::Utf8, true),
-            Field::new("score", DataType::Int32, true),
-        ]));
-        let to = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("score", DataType::Int64, true), // retyped
-            Field::new("added", DataType::Float64, true), // added
-        ]));
-        let d = build_schema_delta(&from, &to);
-        assert_eq!(d.added, vec![("added".to_string(), "Float64?".to_string())]);
-        assert_eq!(d.removed, vec![("gone".to_string(), "Utf8?".to_string())]);
-        assert_eq!(
-            d.retyped,
-            vec![(
-                "score".to_string(),
-                "Int32?".to_string(),
-                "Int64?".to_string()
-            )]
-        );
-    }
-
-    #[test]
-    fn schema_delta_flags_nullability_change() {
-        let from = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let to = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
-        let d = build_schema_delta(&from, &to);
-        assert_eq!(
-            d.retyped,
-            vec![("id".to_string(), "Int32".to_string(), "Int32?".to_string())]
-        );
     }
 
     #[test]

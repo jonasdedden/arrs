@@ -310,30 +310,47 @@ pub enum Command {
         lance: LanceArgs,
     },
 
-    /// (Lance only) Diff two versions of one dataset: row, schema, fragment,
-    /// index and version-log deltas.
+    /// Diff two datasets, or two versions of one Lance dataset.
     ///
-    /// Exit codes follow `diff(1)`: `0` when the two versions are identical,
-    /// `1` when they differ, `2` on error. Human-readable summary by default;
-    /// pass `--format jsonl` for a single machine-readable JSON record.
-    #[command(group(ArgGroup::new("from_ref").required(true).args(["from", "from_tag"])))]
+    /// One verb, two modes, chosen by how many datasets you name:
+    ///
+    ///   * DATASET-VS-DATASET — `arrs diff A B`: compares two *different*
+    ///     datasets (any backend) by schema, schema-metadata and row count.
+    ///     Being backend-generic, it takes no Lance version selectors: passing
+    ///     `--from`/`--to`/`--from-tag`/`--to-tag`/`--branch` alongside a second
+    ///     dataset is an error.
+    ///   * VERSION — `arrs diff DS --from <ref>`: compares two versions of one
+    ///     Lance dataset (row, schema, fragment, index and version-log deltas).
+    ///     Selected by giving a single dataset plus at least one of `--from` /
+    ///     `--from-tag`.
+    ///
+    /// Exit codes follow `diff(1)`: `0` when the two sides are identical, `1`
+    /// when they differ, `2` on error. Human-readable summary by default; pass
+    /// `--format jsonl` for a single machine-readable JSON record. In
+    /// dataset-vs-dataset mode, `--columns`/`--exclude-columns` scope the
+    /// comparison to the projected columns.
     Diff {
+        /// First dataset. In version mode, the single dataset to diff across
+        /// versions.
         input: String,
-        /// Left-hand ("from") version number.
+        /// Second dataset. Its presence selects dataset-vs-dataset mode, in
+        /// which Lance version selectors are rejected.
+        other: Option<String>,
+        /// (Version mode) Left-hand ("from") version number.
         #[arg(long, conflicts_with = "from_tag")]
         from: Option<u64>,
-        /// Left-hand ("from") tag; resolves to its `(branch, version)`.
+        /// (Version mode) Left-hand ("from") tag; resolves to its `(branch, version)`.
         #[arg(long = "from-tag", conflicts_with = "from")]
         from_tag: Option<String>,
-        /// Right-hand ("to") version number. Defaults to the latest version of
-        /// the same branch as the "from" endpoint.
+        /// (Version mode) Right-hand ("to") version number. Defaults to the
+        /// latest version of the same branch as the "from" endpoint.
         #[arg(long, conflicts_with = "to_tag")]
         to: Option<u64>,
-        /// Right-hand ("to") tag; resolves to its `(branch, version)`.
+        /// (Version mode) Right-hand ("to") tag; resolves to its `(branch, version)`.
         #[arg(long = "to-tag", conflicts_with = "to")]
         to_tag: Option<String>,
-        /// Scope both endpoints to this branch (default: main). A tag on a
-        /// different branch is rejected.
+        /// (Version mode) Scope both endpoints to this branch (default: main).
+        /// A tag on a different branch is rejected.
         #[arg(long)]
         branch: Option<String>,
     },

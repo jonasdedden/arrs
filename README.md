@@ -55,7 +55,7 @@ cargo run --release -- <command> [args…]
 | `index-stats` | (Lance) Per-index coverage: indexed vs unindexed row counts.     |
 | `fragments` | (Lance) List fragments with row, deletion, file, and size info.    |
 | `search`   | (Lance) Nearest-neighbor vector search; appends a `_distance` column.|
-| `diff`     | (Lance) Diff two versions of one dataset (rows, schema, fragments, indices). |
+| `diff`     | Diff two datasets (schema + rows), or two versions of one Lance dataset. |
 
 ## Remote datasets
 
@@ -554,9 +554,71 @@ arrs search --column embedding --vector-file q.json -k 10 --columns id,title ds.
 > Full-text search (`--query` against inverted/FTS indices, emitting `_score`)
 > is planned as a follow-up.
 
-### Diffing two versions with `diff`
+### Diffing with `diff`
 
-`arrs diff` compares two versions of the *same* dataset and reports what changed
+`arrs diff` has **two modes**, chosen by how many datasets you name:
+
+| Invocation                         | Mode                | Compares                                   |
+|------------------------------------|---------------------|--------------------------------------------|
+| `arrs diff A B`                    | dataset-vs-dataset  | two *different* datasets (any backend)     |
+| `arrs diff DS --from <ref> …`      | version             | two versions of one *Lance* dataset        |
+
+The mode rules are strict, so the two never collide:
+
+- Naming a **second dataset** selects dataset-vs-dataset mode. Lance version
+  selectors (`--from`/`--to`/`--from-tag`/`--to-tag`/`--branch`) are ambiguous
+  across two different datasets, so combining any of them with a second dataset
+  is an error.
+- Naming a **single dataset** with at least one of `--from`/`--from-tag` selects
+  version mode. A single dataset with no version selector is an error (arrs
+  can't tell which comparison you meant).
+
+#### Dataset-vs-dataset: `arrs diff A B`
+
+Compares two different datasets by **schema**, **schema metadata** and **row
+count** — answering "is `part_b` schema-compatible with `part_a`?" or "did the
+export lose rows?" in one shot. It is generic over the dataset backend; neither
+input takes Lance version selectors.
+
+```sh
+arrs diff part_a.lance part_b.lance
+arrs diff part_a.lance part_b.lance --columns id,score   # scope to some columns
+arrs diff part_a.lance part_b.lance --format jsonl        # machine-readable
+```
+
+It reports:
+
+- **Row count** — the row count of each dataset and the net delta.
+- **Schema changes** — columns only in `A` (removed), only in `B` (added), and
+  columns in both whose type or nullability changed (retyped; nested types are
+  compared structurally, a nullability change shows as `Int32` → `Int32?`).
+- **Metadata changes** — Arrow schema-level metadata keys added, removed, or
+  changed between the two datasets.
+
+`--columns`/`--exclude-columns` scope the comparison to the projected columns
+(row-level content is never compared — that is an explicit non-goal). The
+projection is resolved against each dataset's own schema, so a scoped column
+must exist on both sides. Metadata is dataset-level and always compared in full.
+
+The stable `--format jsonl` record has these fields:
+
+```jsonc
+{
+  "left": "part_a.lance", "right": "part_b.lance",
+  "identical": false,
+  "rows":     { "left": 100, "right": 98, "net": -2 },
+  "schema":   { "added":   [{ "name": "flag", "type": "Boolean?" }],
+                "removed": [],
+                "retyped": [{ "name": "score", "from": "Int32", "to": "Int64?" }] },
+  "metadata": { "added":   [{ "key": "owner", "value": "team-b" }],
+                "removed": [],
+                "changed": [{ "key": "version", "from": "1", "to": "2" }] }
+}
+```
+
+#### Version mode: `arrs diff DS --from <ref>`
+
+Compares two versions of the *same* Lance dataset and reports what changed
 between them — answering "what happened between version 3 and version 7?".
 Because Lance's manifests carry fragment, schema and index metadata, almost all
 of it is derived without scanning data.
@@ -567,10 +629,10 @@ of it is derived without scanning data.
 formats (`csv`, `table`, `json`) do not apply to it.
 
 ```sh
-arrs diff --from 3 --to 7 dataset.lance
-arrs diff --from-tag release-1 --to-tag release-2 dataset.lance
-arrs diff --from 3 dataset.lance                  # --to defaults to branch latest
-arrs diff --branch dev --from 2 --to 5 dataset.lance
+arrs diff dataset.lance --from 3 --to 7
+arrs diff dataset.lance --from-tag release-1 --to-tag release-2
+arrs diff dataset.lance --from 3                  # --to defaults to branch latest
+arrs diff dataset.lance --branch dev --from 2 --to 5
 ```
 
 | Flag                 | Meaning                                                              |
@@ -601,29 +663,36 @@ It reports:
 - **Version log** — the versions in the `(from, to]` range with timestamps and
   commit messages.
 
-Output is a human-readable summary by default; `--format jsonl` emits a single
-machine-readable JSON record for scripting (the only non-default format
-accepted — `csv`/`table` are rejected).
+#### Exit codes (both modes)
 
-Exit codes follow `diff(1)` for CI use:
+Both modes follow `diff(1)` exit-code semantics for CI use:
 
 | Code | Meaning                          |
 |------|----------------------------------|
-| `0`  | the two versions are identical   |
-| `1`  | the two versions differ          |
-| `2`  | error (bad usage, missing dataset, cross-branch comparison, …) |
+| `0`  | the two sides are identical      |
+| `1`  | the two sides differ             |
+| `2`  | error (bad usage, missing dataset, cross-branch comparison, mixing a second dataset with version selectors, …) |
 
 > **Note:** exit code `2` (rather than `1`) is used for *all* command errors
-> across `arrs`, so that exit code `1` unambiguously means "`diff`: the versions
+> across `arrs`, so that exit code `1` unambiguously means "`diff`: the two sides
 > differ" and is never confused with a failure.
 
+Output is a human-readable summary by default; `--format jsonl` emits a single
+machine-readable JSON record for scripting (the only non-default format
+accepted — `csv`/`table` are rejected in either mode).
+
 ```sh
-# Machine-readable diff for a CI gate.
-arrs diff --from 3 --to 7 --format jsonl dataset.lance
+# Machine-readable version diff for a CI gate.
+arrs diff dataset.lance --from 3 --to 7 --format jsonl
 
 # Compare two tagged releases and act on the exit code.
-if arrs diff --from-tag v1 --to-tag v2 dataset.lance; then
+if arrs diff dataset.lance --from-tag v1 --to-tag v2; then
   echo "no changes"
+fi
+
+# Contract check: does a new export match the reference schema and row count?
+if ! arrs diff reference.lance export.lance; then
+  echo "export drifted from the reference" >&2
 fi
 ```
 

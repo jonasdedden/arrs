@@ -95,6 +95,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults leave existing output byte-identical. `BinaryFormat` is now bundled
   with these knobs into a single `RenderOptions` value threaded through the
   writers.
+- `diff` dataset-vs-dataset mode: `arrs diff A B` compares two *different*
+  datasets (generic over the backend) by schema, Arrow schema-metadata, and row
+  count, reporting columns added/removed/retyped (nested types compared
+  structurally, nullability folded into the type label), metadata keys added/
+  removed/changed, and the row-count delta. `--columns`/`--exclude-columns` scope
+  the comparison to the projected columns; row-level content is not compared (an
+  explicit non-goal). The single `diff` verb now spans two modes: two positional
+  datasets select this mode (Lance version selectors are then rejected), one
+  dataset plus `--from`/`--from-tag` selects the version diff (#19). Human summary
+  by default, `--format jsonl` for a stable machine-readable record; exit codes
+  follow `diff(1)` (`0` identical, `1` differ, `2` error). The schema-delta
+  rendering is shared with the version diff via `commands::diff_common`. (#13)
 
 ### Changed
 

@@ -155,6 +155,16 @@ pub enum Error {
     )]
     DiffFormatUnsupported { format: &'static str },
 
+    #[error(
+        "diff cannot combine a second dataset with Lance version selectors (--from/--to/--from-tag/--to-tag/--branch): those select two versions of ONE dataset. Pass either two datasets, or one dataset with version selectors"
+    )]
+    DiffSelectorsInTwoDatasetMode,
+
+    #[error(
+        "diff needs either a second dataset (to compare two datasets) or --from/--from-tag (to compare two versions of one Lance dataset)"
+    )]
+    DiffMissingFromRef,
+
     #[error("arrow error")]
     Arrow(#[from] arrow_schema::ArrowError),
 

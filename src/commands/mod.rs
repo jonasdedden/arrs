@@ -1,5 +1,7 @@
 mod cat;
 mod common;
+mod diff;
+mod diff_common;
 mod freq;
 mod head;
 mod lance;
@@ -44,8 +46,17 @@ pub async fn dispatch(cli: Cli) -> Result<Outcome> {
     // `diff` owns its own format semantics (human summary vs `--format jsonl`)
     // and its own exit-code outcome, so it is branched out before the
     // row-format machinery the other commands share.
+    //
+    // A single `diff` verb spans two modes, chosen by the number of positional
+    // datasets:
+    //   * two datasets (`diff A B`)         -> generic dataset-vs-dataset diff;
+    //   * one dataset + `--from`/`--from-tag`-> Lance version diff.
+    // Conflicting combinations (a second dataset alongside version selectors, or
+    // one dataset with no `--from`) are rejected here rather than by clap, which
+    // cannot express "required only when the second positional is absent".
     if let Command::Diff {
         input,
+        other,
         from,
         from_tag,
         to,
@@ -53,6 +64,24 @@ pub async fn dispatch(cli: Cli) -> Result<Outcome> {
         branch,
     } = cli.command
     {
+        if let Some(other) = other {
+            // Dataset-vs-dataset mode: Lance version selectors are ambiguous
+            // across two different datasets, so any of them is a hard error.
+            if from.is_some()
+                || from_tag.is_some()
+                || to.is_some()
+                || to_tag.is_some()
+                || branch.is_some()
+            {
+                return Err(Error::DiffSelectorsInTwoDatasetMode);
+            }
+            return diff::run(&input, &other, columns, exclude, explicit_format).await;
+        }
+        // Version mode: a left-hand selector is mandatory (the old clap
+        // `from_ref` group, now enforced here so two-dataset mode can omit it).
+        if from.is_none() && from_tag.is_none() {
+            return Err(Error::DiffMissingFromRef);
+        }
         let selectors = lance::diff::DiffSelectors {
             branch,
             from_version: from,

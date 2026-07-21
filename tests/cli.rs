@@ -7,8 +7,11 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_array::{
+    ArrayRef, Float64Array, Int32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+    StructArray,
+};
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use arrs::cli::{BinaryFormat, Cli, Command, FilterArg, Format, LanceArgs};
 use arrs::commands::dispatch;
 use arrs::dataset;
@@ -1909,4 +1912,304 @@ fn diff_tag_on_wrong_branch_errors_with_exit_two() {
         &path,
     );
     assert_eq!(out.status.code(), Some(2));
+}
+
+// -------------------- diff dataset-vs-dataset (issue #13) --------------------
+
+/// Run `arrs <args>` with no implicit trailing dataset path (the two-positional
+/// dataset-vs-dataset diff needs full control over the argument vector).
+fn run_bin(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_arrs"))
+        .args(args)
+        .output()
+        .expect("spawn arrs binary")
+}
+
+/// Write a single-batch Lance dataset under `dir`, returning its path as a
+/// `String` (the form the two-positional CLI wants).
+fn write_batch_dataset(dir: &Path, name: &str, batch: RecordBatch) -> String {
+    let uri = dir.join(name).to_string_lossy().into_owned();
+    runtime().block_on(async {
+        let schema = batch.schema();
+        let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+        LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+    });
+    uri
+}
+
+/// A dataset with an `id: Int32, value: Utf8` schema and the given rows.
+fn write_idval(dir: &Path, name: &str, ids: Vec<i32>, vals: Vec<&str>) -> String {
+    write_batch_dataset(dir, name, diff_batch(ids, vals))
+}
+
+/// A dataset with a `meta: Struct<{ id }>` column, where `id` is `Int64` when
+/// `id_i64`, else `Int32`. Used to exercise structural nested-type comparison.
+fn write_nested(dir: &Path, name: &str, id_i64: bool) -> String {
+    let (id_field, id_arr): (Field, ArrayRef) = if id_i64 {
+        (
+            Field::new("id", DataType::Int64, true),
+            Arc::new(Int64Array::from(vec![1i64, 2, 3])),
+        )
+    } else {
+        (
+            Field::new("id", DataType::Int32, true),
+            Arc::new(Int32Array::from(vec![1i32, 2, 3])),
+        )
+    };
+    let fields = Fields::from(vec![id_field]);
+    let meta = StructArray::new(fields.clone(), vec![id_arr], None);
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "meta",
+        DataType::Struct(fields),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(meta)]).unwrap();
+    write_batch_dataset(dir, name, batch)
+}
+
+/// Run `arrs diff A B <extra…> --format jsonl`, assert the exit code, and parse.
+fn dsdiff_json(a: &str, b: &str, extra: &[&str], expect_code: i32) -> serde_json::Value {
+    let mut args = vec!["diff", a, b];
+    args.extend_from_slice(extra);
+    args.extend_from_slice(&["--format", "jsonl"]);
+    let out = run_bin(&args);
+    assert_eq!(
+        out.status.code(),
+        Some(expect_code),
+        "exit code mismatch; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "dataset diff jsonl not parseable ({e}); stdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
+
+#[test]
+fn dsdiff_identical_datasets_exit_zero() {
+    let tmp = tempdir();
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    let b = write_idval(tmp.path(), "b.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+
+    let out = run_bin(&["diff", &a, &b]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No differences."),
+        "expected 'No differences.' in:\n{stdout}"
+    );
+
+    // jsonl view of an identical pair: identical=true, empty deltas.
+    let v = dsdiff_json(&a, &b, &[], 0);
+    assert_eq!(v["identical"], serde_json::json!(true));
+    assert_eq!(v["rows"]["net"], serde_json::json!(0));
+    assert_eq!(v["schema"]["added"], serde_json::json!([]));
+    assert_eq!(v["schema"]["removed"], serde_json::json!([]));
+    assert_eq!(v["schema"]["retyped"], serde_json::json!([]));
+    assert_eq!(v["metadata"]["added"], serde_json::json!([]));
+}
+
+#[test]
+fn dsdiff_schema_and_rowcount_difference_jsonl_fields() {
+    let tmp = tempdir();
+    // A: id, value; 3 rows.
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    // B: id, value, extra; 2 rows.
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Utf8, true),
+        Field::new("extra", DataType::Float64, true),
+    ]));
+    let b_batch = RecordBatch::try_new(
+        b_schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])),
+            Arc::new(StringArray::from(vec!["p", "q"])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0])),
+        ],
+    )
+    .unwrap();
+    let b = write_batch_dataset(tmp.path(), "b.lance", b_batch);
+
+    let v = dsdiff_json(&a, &b, &[], 1);
+    // Documented, stable field names.
+    assert_eq!(v["left"], serde_json::json!(a));
+    assert_eq!(v["right"], serde_json::json!(b));
+    assert_eq!(v["identical"], serde_json::json!(false));
+    assert_eq!(v["rows"]["left"], serde_json::json!(3));
+    assert_eq!(v["rows"]["right"], serde_json::json!(2));
+    assert_eq!(v["rows"]["net"], serde_json::json!(-1));
+    let added = v["schema"]["added"].as_array().unwrap();
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0]["name"], serde_json::json!("extra"));
+    assert!(added[0]["type"].as_str().unwrap().starts_with("Float64"));
+    assert_eq!(v["schema"]["removed"], serde_json::json!([]));
+    assert_eq!(v["schema"]["retyped"], serde_json::json!([]));
+    // Metadata object is always present with its three arrays.
+    assert!(v["metadata"]["added"].is_array());
+    assert!(v["metadata"]["removed"].is_array());
+    assert!(v["metadata"]["changed"].is_array());
+}
+
+#[test]
+fn dsdiff_rowcount_only_difference() {
+    let tmp = tempdir();
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    let b = write_idval(
+        tmp.path(),
+        "b.lance",
+        vec![1, 2, 3, 4, 5],
+        vec!["x", "y", "z", "p", "q"],
+    );
+
+    let v = dsdiff_json(&a, &b, &[], 1);
+    assert_eq!(v["rows"]["left"], serde_json::json!(3));
+    assert_eq!(v["rows"]["right"], serde_json::json!(5));
+    assert_eq!(v["rows"]["net"], serde_json::json!(2));
+    // Schema is unchanged even though the row counts differ.
+    assert_eq!(v["schema"]["added"], serde_json::json!([]));
+    assert_eq!(v["schema"]["removed"], serde_json::json!([]));
+    assert_eq!(v["schema"]["retyped"], serde_json::json!([]));
+}
+
+#[test]
+fn dsdiff_retyped_column_is_reported() {
+    let tmp = tempdir();
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    // B: same names, but `id` is Int64.
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("value", DataType::Utf8, true),
+    ]));
+    let b_batch = RecordBatch::try_new(
+        b_schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1i64, 2, 3])),
+            Arc::new(StringArray::from(vec!["x", "y", "z"])),
+        ],
+    )
+    .unwrap();
+    let b = write_batch_dataset(tmp.path(), "b.lance", b_batch);
+
+    let v = dsdiff_json(&a, &b, &[], 1);
+    let retyped = v["schema"]["retyped"].as_array().unwrap();
+    assert_eq!(retyped.len(), 1);
+    assert_eq!(retyped[0]["name"], serde_json::json!("id"));
+    assert!(retyped[0]["from"].as_str().unwrap().starts_with("Int32"));
+    assert!(retyped[0]["to"].as_str().unwrap().starts_with("Int64"));
+}
+
+#[test]
+fn dsdiff_nested_type_difference_compared_structurally() {
+    let tmp = tempdir();
+    let a = write_nested(tmp.path(), "a.lance", true); // meta.id: Int64
+    let b = write_nested(tmp.path(), "b.lance", false); // meta.id: Int32
+
+    let v = dsdiff_json(&a, &b, &[], 1);
+    let retyped = v["schema"]["retyped"].as_array().unwrap();
+    assert_eq!(retyped.len(), 1, "expected one retyped column: {v}");
+    assert_eq!(retyped[0]["name"], serde_json::json!("meta"));
+    // The nested label recurses through the struct, mentioning both inner types.
+    assert!(retyped[0]["from"].as_str().unwrap().contains("Int64"));
+    assert!(retyped[0]["to"].as_str().unwrap().contains("Int32"));
+}
+
+#[test]
+fn dsdiff_projection_scopes_the_comparison() {
+    let tmp = tempdir();
+    // A: id, value; B: id, value, extra. Same 3 rows.
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Utf8, true),
+        Field::new("extra", DataType::Float64, true),
+    ]));
+    let b_batch = RecordBatch::try_new(
+        b_schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["x", "y", "z"])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+        ],
+    )
+    .unwrap();
+    let b = write_batch_dataset(tmp.path(), "b.lance", b_batch);
+
+    // Unscoped: `extra` makes them differ.
+    assert_eq!(run_bin(&["diff", &a, &b]).status.code(), Some(1));
+
+    // Scoped to the shared columns: identical -> exit 0.
+    let out = run_bin(&["diff", &a, &b, "--columns", "id,value"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("No differences."));
+}
+
+#[test]
+fn dsdiff_projection_absent_on_one_side_errors() {
+    let tmp = tempdir();
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    let b = write_idval(tmp.path(), "b.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    // `extra` exists on neither: strict per-side resolution rejects it (exit 2).
+    let out = run_bin(&["diff", &a, &b, "--columns", "extra"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "stdout should be empty on error");
+}
+
+#[test]
+fn dsdiff_rejects_lance_version_selectors() {
+    let tmp = tempdir();
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    let b = write_idval(tmp.path(), "b.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    // A second dataset with a Lance selector is a mode conflict -> exit 2.
+    let out = run_bin(&["diff", &a, &b, "--from", "1"]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot combine a second dataset"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn dsdiff_missing_dataset_exit_two() {
+    let tmp = tempdir();
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    let missing = tmp.path().join("nope.lance");
+    let out = run_bin(&["diff", &a, missing.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "stdout should be empty on error");
+}
+
+#[test]
+fn dsdiff_unsupported_format_exit_two() {
+    let tmp = tempdir();
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    let b = write_idval(tmp.path(), "b.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    let out = run_bin(&["diff", &a, &b, "--format", "csv"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("diff supports only"),
+        "unexpected stderr"
+    );
+}
+
+#[test]
+fn diff_single_dataset_without_selector_errors() {
+    let tmp = tempdir();
+    let a = write_idval(tmp.path(), "a.lance", vec![1, 2, 3], vec!["x", "y", "z"]);
+    // One dataset, no --from/--from-tag: arrs can't tell which comparison.
+    let out = run_bin(&["diff", &a]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("needs either a second dataset"),
+        "unexpected stderr: {stderr}"
+    );
 }
