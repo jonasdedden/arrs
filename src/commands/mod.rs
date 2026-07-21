@@ -129,6 +129,7 @@ async fn run_command(
         Command::Cat {
             inputs,
             filter,
+            row_ids,
             lance,
         } => {
             cat::run(
@@ -138,6 +139,7 @@ async fn run_command(
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
+                row_ids.flags(),
                 &lance,
                 show_progress,
             )
@@ -147,6 +149,7 @@ async fn run_command(
             input,
             limit,
             filter,
+            row_ids,
             lance,
         } => {
             head::run(
@@ -157,6 +160,7 @@ async fn run_command(
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
+                row_ids.flags(),
                 &lance,
                 show_progress,
             )
@@ -166,6 +170,7 @@ async fn run_command(
             input,
             limit,
             filter,
+            row_ids,
             lance,
         } => {
             tail::run(
@@ -176,6 +181,7 @@ async fn run_command(
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
+                row_ids.flags(),
                 &lance,
                 show_progress,
             )
@@ -185,6 +191,7 @@ async fn run_command(
             input,
             indices,
             filter,
+            row_ids,
             lance,
         } => {
             take::run(
@@ -195,6 +202,7 @@ async fn run_command(
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
+                row_ids.flags(),
                 &lance,
             )
             .await
@@ -223,6 +231,7 @@ async fn run_command(
             limit,
             seed,
             filter,
+            row_ids,
             lance,
         } => {
             sample::run(
@@ -234,6 +243,7 @@ async fn run_command(
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
+                row_ids.flags(),
                 &lance,
                 show_progress,
             )

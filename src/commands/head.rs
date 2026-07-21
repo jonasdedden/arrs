@@ -2,11 +2,12 @@ use futures::StreamExt;
 
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
-use crate::commands::common::{make_stdout_writer, project_arrow_schema};
+use crate::commands::common::{make_stdout_writer, prepare_row_id_columns, project_arrow_schema};
 use crate::commands::progress::ScanProgress;
 use crate::dataset::{self, ScanOptions};
 use crate::output::RenderOptions;
 use crate::projection;
+use crate::row_id::{self, RowIds};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -17,13 +18,16 @@ pub async fn run(
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
     filter: Option<&str>,
+    row_ids: RowIds,
     lance: &LanceArgs,
     show_progress: bool,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let arrow_schema = ds.arrow_schema();
-    let projection = projection::resolve(&arrow_schema, columns, exclude)?;
+    let columns = prepare_row_id_columns(ds.as_ref(), columns, exclude, row_ids)?;
+    let projection = projection::resolve(&arrow_schema, columns.as_deref(), exclude)?;
     let projected_schema = project_arrow_schema(arrow_schema.as_ref(), projection.as_deref());
+    let projected_schema = row_id::extend_schema(&projected_schema, row_ids);
 
     // Progress: an unfiltered `head` stops after `limit` rows, so it barely
     // scans and needs no indicator. A filtered `head` may scan far to find
@@ -38,6 +42,7 @@ pub async fn run(
         let options = ScanOptions {
             projection: projection.as_deref(),
             filter,
+            row_ids,
         };
         Some(progress.wrap(ds.scan(&options).await?))
     } else {

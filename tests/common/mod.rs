@@ -109,6 +109,16 @@ pub async fn write_simple(tmp: &TempDir, name: &str) -> PathBuf {
     path
 }
 
+/// Write `simple_batch()` (ids 1..=5 in one fragment) and then delete the rows
+/// with `id` 2 and 4, so the surviving rows (ids 1, 3, 5) have *non-contiguous*
+/// `_rowid`s. Fixture for the row-id stability-across-deletion tests.
+pub async fn write_simple_with_deletions(tmp: &TempDir, name: &str) -> PathBuf {
+    let path = write_simple(tmp, name).await;
+    let mut ds = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
+    ds.delete("id = 2 OR id = 4").await.unwrap();
+    path
+}
+
 /// Write the full (all types) dataset.
 pub async fn write_full(tmp: &TempDir, name: &str) -> PathBuf {
     let path = tmp.path().join(name);

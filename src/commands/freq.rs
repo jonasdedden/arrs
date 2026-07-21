@@ -144,6 +144,7 @@ async fn accumulate(
     let options = ScanOptions {
         projection: Some(&projection),
         filter,
+        ..Default::default()
     };
     let mut stream = progress.wrap(ds.scan(&options).await?);
 

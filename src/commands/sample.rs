@@ -6,12 +6,13 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
-use crate::commands::common::{make_stdout_writer, project_arrow_schema};
+use crate::commands::common::{make_stdout_writer, prepare_row_id_columns, project_arrow_schema};
 use crate::commands::progress::ScanProgress;
 use crate::dataset::{self, Dataset, ScanOptions};
 use crate::error::Error;
 use crate::output::RenderOptions;
 use crate::projection;
+use crate::row_id::{self, RowIds};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -23,13 +24,16 @@ pub async fn run(
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
     filter: Option<&str>,
+    row_ids: RowIds,
     lance: &LanceArgs,
     show_progress: bool,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let arrow_schema = ds.arrow_schema();
-    let projection = projection::resolve(&arrow_schema, columns, exclude)?;
+    let columns = prepare_row_id_columns(ds.as_ref(), columns, exclude, row_ids)?;
+    let projection = projection::resolve(&arrow_schema, columns.as_deref(), exclude)?;
     let projected_schema = project_arrow_schema(arrow_schema.as_ref(), projection.as_deref());
+    let projected_schema = row_id::extend_schema(&projected_schema, row_ids);
 
     // Sample fully before emitting the header (both paths materialise their
     // result), so error paths — an oversize sample or an invalid `--where` —
@@ -41,7 +45,7 @@ pub async fn run(
     let output = match filter {
         // Without a filter the row count is known, so shuffle positional
         // indices and `take` the chosen rows in one shot.
-        None => sample_by_index(ds.as_ref(), limit, seed, projection.as_deref()).await?,
+        None => sample_by_index(ds.as_ref(), limit, seed, projection.as_deref(), row_ids).await?,
         // With a filter we can't know how many rows match without scanning, and
         // positional indices no longer address the matching rows — reservoir
         // sample over the filtered stream instead.
@@ -53,6 +57,7 @@ pub async fn run(
                 projection.as_deref(),
                 pred,
                 &progress,
+                row_ids,
             )
             .await?
         }
@@ -85,6 +90,7 @@ async fn sample_by_index(
     limit: u64,
     seed: Option<u64>,
     projection: Option<&[String]>,
+    row_ids: RowIds,
 ) -> Result<Option<RecordBatch>> {
     let rowcount = ds.count_rows(None).await?;
     if limit > rowcount {
@@ -102,7 +108,7 @@ async fn sample_by_index(
     pool.shuffle(&mut rng);
     pool.truncate(limit as usize);
 
-    let batch = ds.take(&pool, projection).await?;
+    let batch = ds.take(&pool, projection, row_ids).await?;
     Ok(Some(batch))
 }
 
@@ -117,6 +123,7 @@ async fn sample_by_reservoir(
     projection: Option<&[String]>,
     filter: &str,
     progress: &ScanProgress,
+    row_ids: RowIds,
 ) -> Result<Option<RecordBatch>> {
     if limit == 0 {
         return Ok(None);
@@ -125,6 +132,7 @@ async fn sample_by_reservoir(
     let options = ScanOptions {
         projection,
         filter: Some(filter),
+        row_ids,
     };
     let mut stream = progress.wrap(ds.scan(&options).await?);
 
@@ -187,6 +195,7 @@ mod tests {
             None,
             "id % 2 = 0",
             &ScanProgress::disabled(),
+            RowIds::default(),
         )
         .await
         .unwrap()
@@ -198,6 +207,7 @@ mod tests {
             None,
             "id % 2 = 0",
             &ScanProgress::disabled(),
+            RowIds::default(),
         )
         .await
         .unwrap()
@@ -226,6 +236,7 @@ mod tests {
             None,
             "id % 2 = 0",
             &ScanProgress::disabled(),
+            RowIds::default(),
         )
         .await
         .unwrap()
@@ -249,6 +260,7 @@ mod tests {
             None,
             "id = 0",
             &ScanProgress::disabled(),
+            RowIds::default(),
         )
         .await
         .unwrap_err();
@@ -275,6 +287,7 @@ mod tests {
             None,
             "id > 100",
             &ScanProgress::disabled(),
+            RowIds::default(),
         )
         .await
         .unwrap_err();

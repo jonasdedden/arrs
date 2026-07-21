@@ -95,6 +95,37 @@ pub struct FilterArg {
     pub predicate: Option<String>,
 }
 
+/// The `--with-row-id` / `--with-row-addr` pseudo-column flags, shared by the
+/// row-producing commands (`cat`/`head`/`tail`/`take`/`sample`). Lance-only; a
+/// clear "not supported by this format" error is raised on any other backend.
+/// Kept as its own flattened `Args` group so the flag definitions live in one
+/// place.
+#[derive(Debug, Clone, Args, Default)]
+pub struct RowIdArgs {
+    /// (Lance only) Append a `_rowid` column: the stable per-row identity that
+    /// survives compaction and follows a row across versions. Always emitted
+    /// regardless of --columns/--exclude-columns.
+    #[arg(long = "with-row-id")]
+    pub with_row_id: bool,
+
+    /// (Lance only) Append a `_rowaddr` column: the physical address of the row
+    /// (`fragment_id << 32 | offset`) in the current version. Always emitted
+    /// regardless of --columns/--exclude-columns.
+    #[arg(long = "with-row-addr")]
+    pub with_row_addr: bool,
+}
+
+impl RowIdArgs {
+    /// Convert the parsed flags into the [`crate::row_id::RowIds`] threaded
+    /// through `ScanOptions` and `Dataset::take`.
+    pub fn flags(&self) -> crate::row_id::RowIds {
+        crate::row_id::RowIds {
+            with_row_id: self.with_row_id,
+            with_row_addr: self.with_row_addr,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "arrs", about = "Inspect Arrow-based datasets.", version)]
 pub struct Cli {
@@ -158,6 +189,8 @@ pub enum Command {
         #[command(flatten)]
         filter: FilterArg,
         #[command(flatten)]
+        row_ids: RowIdArgs,
+        #[command(flatten)]
         lance: LanceArgs,
     },
 
@@ -168,6 +201,8 @@ pub enum Command {
         limit: u64,
         #[command(flatten)]
         filter: FilterArg,
+        #[command(flatten)]
+        row_ids: RowIdArgs,
         #[command(flatten)]
         lance: LanceArgs,
     },
@@ -180,6 +215,8 @@ pub enum Command {
         #[command(flatten)]
         filter: FilterArg,
         #[command(flatten)]
+        row_ids: RowIdArgs,
+        #[command(flatten)]
         lance: LanceArgs,
     },
 
@@ -190,6 +227,8 @@ pub enum Command {
         indices: String,
         #[command(flatten)]
         filter: FilterArg,
+        #[command(flatten)]
+        row_ids: RowIdArgs,
         #[command(flatten)]
         lance: LanceArgs,
     },
@@ -240,6 +279,8 @@ pub enum Command {
         seed: Option<u64>,
         #[command(flatten)]
         filter: FilterArg,
+        #[command(flatten)]
+        row_ids: RowIdArgs,
         #[command(flatten)]
         lance: LanceArgs,
     },

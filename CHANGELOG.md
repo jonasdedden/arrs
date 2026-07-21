@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--with-row-id` / `--with-row-addr` output columns (Lance only) for `cat`,
+  `head`, `tail`, `take`, and `sample`: append the row's stable identity
+  (`_rowid`) and/or its physical address (`_rowaddr`, `fragment_id << 32 |
+  offset`) as `UInt64` columns, after the projected columns (`_rowid` before
+  `_rowaddr`). Emitted whenever the flag is set regardless of
+  `--columns`/`--exclude-columns`; explicitly excluding a requested pseudo-column
+  errors with a hint to drop the flag. Values are consistent across commands for
+  the same rows (scan and `take` paths alike) and stay correct across deletions
+  (surviving `_rowid`s become non-contiguous). A `Dataset::supports_row_id`
+  capability hook rejects the flags on formats that can't provide them with a
+  clear "not supported by this format" error. (#21)
 - `--where <predicate>` SQL-style predicate filtering for `cat`, `head`, `tail`,
   `rowcount`, and `sample`. The filter is applied before row selection, and
   filtered `rowcount` uses the backend's native filtered count (pushed into
@@ -143,6 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Dataset::scan` now takes a `ScanOptions` struct (projection + filter) instead
   of a positional projection argument; `Dataset::count_rows` takes an optional
   filter. (#6)
+- `ScanOptions` gained a `row_ids` field and `Dataset::take` a `row_ids`
+  argument, both carrying the `--with-row-id`/`--with-row-addr` selection. (#21)
 - `indices` output now includes an index `type` column (`BTree`, `IVF_PQ`,
   `INVERTED`, …), sourced from Lance's index statistics. (#17)
 - Library API: `arrs::stats::compute` gained a `&ScanProgress` parameter (used
