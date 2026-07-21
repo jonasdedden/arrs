@@ -5,7 +5,7 @@ use futures::StreamExt;
 use crate::Result;
 use crate::cli::{BinaryFormat, Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema, schemas_match};
-use crate::dataset;
+use crate::dataset::{self, ScanOptions};
 use crate::error::Error;
 use crate::projection;
 
@@ -15,6 +15,7 @@ pub async fn run(
     binary_format: BinaryFormat,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
+    filter: Option<&str>,
     lance: &LanceArgs,
 ) -> Result<()> {
     if inputs.is_empty() {
@@ -41,14 +42,22 @@ pub async fn run(
         }
     }
 
+    let options = ScanOptions {
+        projection: projection.as_deref(),
+        filter,
+    };
+    // Open every scan first: the adapter validates the predicate eagerly, so a
+    // bad `--where` errors here, before we emit the output header to stdout.
+    let mut streams = Vec::with_capacity(opened.len());
+    for ds in &opened {
+        streams.push(ds.scan(&options).await?);
+    }
+
     let mut writer = make_stdout_writer(format, binary_format);
     writer.start(&projected_schema)?;
-
-    for ds in &opened {
-        let mut stream = ds.scan(projection.as_deref()).await?;
+    for mut stream in streams {
         while let Some(batch) = stream.next().await {
-            let batch = batch?;
-            writer.write_batch(&batch)?;
+            writer.write_batch(&batch?)?;
         }
     }
     writer.finish()?;

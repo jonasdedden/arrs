@@ -58,6 +58,18 @@ impl LanceArgs {
     }
 }
 
+/// SQL-style row predicate shared by every row-producing command (and
+/// `rowcount`). Kept as its own flattened `Args` group so the flag definition
+/// lives in exactly one place.
+#[derive(Debug, Clone, Args, Default)]
+pub struct FilterArg {
+    /// Keep only rows matching this SQL-style predicate (e.g.
+    /// `"score > 0.5 AND split = 'test'"`). Applied before row selection, so
+    /// `head`/`tail`/`sample` operate on the matching rows.
+    #[arg(long = "where", value_name = "PREDICATE")]
+    pub predicate: Option<String>,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "arrs", about = "Inspect Arrow-based datasets.", version)]
 pub struct Cli {
@@ -91,6 +103,8 @@ pub enum Command {
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
         #[command(flatten)]
+        filter: FilterArg,
+        #[command(flatten)]
         lance: LanceArgs,
     },
 
@@ -99,6 +113,8 @@ pub enum Command {
         input: PathBuf,
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: u64,
+        #[command(flatten)]
+        filter: FilterArg,
         #[command(flatten)]
         lance: LanceArgs,
     },
@@ -109,6 +125,8 @@ pub enum Command {
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: u64,
         #[command(flatten)]
+        filter: FilterArg,
+        #[command(flatten)]
         lance: LanceArgs,
     },
 
@@ -118,12 +136,16 @@ pub enum Command {
         #[arg(long, allow_hyphen_values = true)]
         indices: String,
         #[command(flatten)]
+        filter: FilterArg,
+        #[command(flatten)]
         lance: LanceArgs,
     },
 
     /// Print the number of rows.
     Rowcount {
         input: PathBuf,
+        #[command(flatten)]
+        filter: FilterArg,
         #[command(flatten)]
         lance: LanceArgs,
     },
@@ -136,6 +158,8 @@ pub enum Command {
         /// Optional u64 seed for reproducibility.
         #[arg(long)]
         seed: Option<u64>,
+        #[command(flatten)]
+        filter: FilterArg,
         #[command(flatten)]
         lance: LanceArgs,
     },

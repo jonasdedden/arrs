@@ -16,6 +16,23 @@ use crate::error::Error;
 /// Stream of `RecordBatch` results produced by a scan.
 pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>;
 
+/// Options controlling a `scan()`.
+///
+/// Passed as a struct (rather than a growing list of positional parameters) so
+/// that new knobs can be added without churning every call site. Today it
+/// carries a column projection and an optional row predicate; row-id emission
+/// is expected to land here next. All fields are borrowed, so the struct is
+/// cheap to `Copy` and construct inline at each command.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ScanOptions<'a> {
+    /// Columns to include, in the given order. `None` means all columns.
+    pub projection: Option<&'a [String]>,
+    /// SQL-style predicate. Only matching rows are produced, and the filter is
+    /// applied *before* any positional selection the command performs. `None`
+    /// means no filtering.
+    pub filter: Option<&'a str>,
+}
+
 /// Format-agnostic dataset view used by every command.
 ///
 /// Input-format adapters (Lance today, potentially others in the future) implement this trait.
@@ -32,11 +49,13 @@ pub trait Dataset: Send + Sync + Debug {
     /// projected to a subset of columns.
     fn physical_schema_debug(&self, projection: Option<&[String]>) -> Result<String>;
 
-    /// Total row count.
-    async fn count_rows(&self) -> Result<u64>;
+    /// Total row count, optionally restricted to rows matching `filter` (a
+    /// SQL-style predicate). Adapters that can count through an index (Lance)
+    /// should do so rather than scanning.
+    async fn count_rows(&self, filter: Option<&str>) -> Result<u64>;
 
-    /// Stream all rows, optionally projected to the given columns.
-    async fn scan(&self, projection: Option<&[String]>) -> Result<BatchStream>;
+    /// Stream rows according to `options` (projection + optional filter).
+    async fn scan(&self, options: &ScanOptions<'_>) -> Result<BatchStream>;
 
     /// Materialise a `RecordBatch` containing only the rows at the given indices,
     /// in the order given. `indices` must all be < `count_rows()`.

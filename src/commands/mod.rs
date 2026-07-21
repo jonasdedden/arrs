@@ -23,12 +23,26 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     }
     let format = resolve_format(cli.format, &cli.command);
     match cli.command {
-        Command::Cat { inputs, lance } => {
-            cat::run(&inputs, format, binary_format, columns, exclude, &lance).await
+        Command::Cat {
+            inputs,
+            filter,
+            lance,
+        } => {
+            cat::run(
+                &inputs,
+                format,
+                binary_format,
+                columns,
+                exclude,
+                filter.predicate.as_deref(),
+                &lance,
+            )
+            .await
         }
         Command::Head {
             input,
             limit,
+            filter,
             lance,
         } => {
             head::run(
@@ -38,6 +52,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 binary_format,
                 columns,
                 exclude,
+                filter.predicate.as_deref(),
                 &lance,
             )
             .await
@@ -45,6 +60,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Tail {
             input,
             limit,
+            filter,
             lance,
         } => {
             tail::run(
@@ -54,6 +70,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 binary_format,
                 columns,
                 exclude,
+                filter.predicate.as_deref(),
                 &lance,
             )
             .await
@@ -61,6 +78,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Take {
             input,
             indices,
+            filter,
             lance,
         } => {
             take::run(
@@ -70,15 +88,21 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 binary_format,
                 columns,
                 exclude,
+                filter.predicate.as_deref(),
                 &lance,
             )
             .await
         }
-        Command::Rowcount { input, lance } => rowcount::run(&input, &lance).await,
+        Command::Rowcount {
+            input,
+            filter,
+            lance,
+        } => rowcount::run(&input, filter.predicate.as_deref(), &lance).await,
         Command::Sample {
             input,
             limit,
             seed,
+            filter,
             lance,
         } => {
             sample::run(
@@ -89,6 +113,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 binary_format,
                 columns,
                 exclude,
+                filter.predicate.as_deref(),
                 &lance,
             )
             .await

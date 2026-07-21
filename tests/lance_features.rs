@@ -206,7 +206,7 @@ fn checkout_by_version_yields_old_rowcount() {
             ..LanceArgs::default()
         };
         let ds = dataset::open(&path, Some(&lance)).await.unwrap();
-        assert_eq!(ds.count_rows().await.unwrap(), 2);
+        assert_eq!(ds.count_rows(None).await.unwrap(), 2);
     });
 }
 
@@ -222,7 +222,7 @@ fn checkout_by_tag_yields_tagged_rowcount() {
         };
         let ds = dataset::open(&path, Some(&lance)).await.unwrap();
         // v2 = v1 (2 rows) + v2 append (1 row) = 3 rows
-        assert_eq!(ds.count_rows().await.unwrap(), 3);
+        assert_eq!(ds.count_rows(None).await.unwrap(), 3);
     });
 }
 
@@ -238,7 +238,7 @@ fn checkout_by_branch_uses_branch_latest() {
         };
         let ds = dataset::open(&path, Some(&lance)).await.unwrap();
         // dev was branched from v2 of main and never appended to → 3 rows.
-        assert_eq!(ds.count_rows().await.unwrap(), 3);
+        assert_eq!(ds.count_rows(None).await.unwrap(), 3);
     });
 }
 
@@ -271,7 +271,7 @@ fn checkout_tag_with_matching_branch_ok() {
             ..LanceArgs::default()
         };
         let ds = dataset::open(&path, Some(&lance)).await.unwrap();
-        assert_eq!(ds.count_rows().await.unwrap(), 3);
+        assert_eq!(ds.count_rows(None).await.unwrap(), 3);
     });
 }
 

@@ -7,4 +7,7 @@ pub mod lance;
 pub mod output;
 pub mod projection;
 
+#[cfg(test)]
+mod test_support;
+
 pub use error::{Error, Result};
