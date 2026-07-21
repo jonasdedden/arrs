@@ -18,12 +18,11 @@ use lance_index::vector::DIST_COL;
 use crate::Result;
 use crate::cli::LanceArgs;
 use crate::dataset::{
-    BatchStream, BranchInfo, Dataset, FragmentInfo, IndexInfo, IndexStats, LanceCapabilities,
-    ScanOptions, TagInfo, VectorSearchParams, VectorSearchResult, VersionInfo,
+    BatchStream, BranchInfo, CheckoutState, Dataset, FragmentInfo, IndexInfo, IndexStats,
+    LanceCapabilities, MAIN_BRANCH, ScanOptions, TagInfo, VectorSearchParams, VectorSearchResult,
+    VersionInfo,
 };
 use crate::error::Error;
-
-const MAIN_BRANCH: &str = "main";
 
 /// Max in-flight object-store `size` lookups when computing fragment sizes.
 /// Fragments are typically backed by a single data file, so this bounds the
@@ -797,6 +796,18 @@ impl LanceCapabilities for LanceDataset {
             });
         }
         Ok(out)
+    }
+
+    fn checkout_state(&self) -> CheckoutState {
+        let manifest = self.inner.manifest();
+        CheckoutState {
+            // Lance stores `branch: None` for the implicit default branch.
+            branch: manifest
+                .branch
+                .clone()
+                .unwrap_or_else(|| MAIN_BRANCH.to_string()),
+            version: manifest.version,
+        }
     }
 }
 

@@ -13,6 +13,10 @@ use crate::Result;
 use crate::cli::LanceArgs;
 use crate::error::Error;
 
+/// The name Lance's implicit default branch is surfaced under. Lance stores it
+/// as `None` internally; the adapter and commands normalise that to `"main"`.
+pub const MAIN_BRANCH: &str = "main";
+
 /// Stream of `RecordBatch` results produced by a scan.
 pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>;
 
@@ -130,6 +134,20 @@ pub trait LanceCapabilities: Send + Sync {
     /// which path was taken. The query vector is validated against the column
     /// width and cast to the column's element type by the adapter.
     async fn search(&self, params: &VectorSearchParams<'_>) -> Result<VectorSearchResult>;
+
+    /// The `(branch, version)` this handle is currently checked out to.
+    ///
+    /// Read straight from the loaded manifest (no I/O). Used by `diff` to label
+    /// each endpoint and to detect a cross-branch comparison after both handles
+    /// have been opened and any tag/branch selectors resolved.
+    fn checkout_state(&self) -> CheckoutState;
+}
+
+/// The resolved branch and version of an opened Lance handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutState {
+    pub branch: String,
+    pub version: u64,
 }
 
 /// Parameters for an `arrs search` nearest-neighbor query.

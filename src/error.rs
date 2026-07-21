@@ -142,6 +142,19 @@ pub enum Error {
     #[error("--format is not applicable to '{command}' (it does not emit row-shaped output)")]
     FormatNotApplicable { command: &'static str },
 
+    #[error(
+        "diff compares two versions of one branch, but the endpoints resolved to different branches ('{from_branch}' and '{to_branch}'); scope both with --branch or use tags on the same branch"
+    )]
+    DiffCrossBranch {
+        from_branch: String,
+        to_branch: String,
+    },
+
+    #[error(
+        "diff supports only the default human-readable summary or --format jsonl (got {format})"
+    )]
+    DiffFormatUnsupported { format: &'static str },
+
     #[error("arrow error")]
     Arrow(#[from] arrow_schema::ArrowError),
 

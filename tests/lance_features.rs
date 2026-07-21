@@ -505,6 +505,36 @@ fn list_tags_returns_cross_branch_view() {
 }
 
 #[test]
+fn checkout_state_reports_branch_and_version() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+
+        // Version-pinned handle on main.
+        let lance_args = LanceArgs {
+            version: Some(2),
+            ..LanceArgs::default()
+        };
+        let ds = dataset::open(&path, Some(&lance_args)).await.unwrap();
+        let state = ds.lance().unwrap().checkout_state();
+        assert_eq!(state.branch, "main");
+        assert_eq!(state.version, 2);
+
+        // Latest of main (no selectors) sees v3.
+        let ds = dataset::open(&path, None).await.unwrap();
+        assert_eq!(ds.lance().unwrap().checkout_state().version, 3);
+
+        // A branch handle reports its branch.
+        let dev_args = LanceArgs {
+            branch: Some("dev".to_string()),
+            ..LanceArgs::default()
+        };
+        let ds = dataset::open(&path, Some(&dev_args)).await.unwrap();
+        assert_eq!(ds.lance().unwrap().checkout_state().branch, "dev");
+    });
+}
+
+#[test]
 fn list_indices_finds_btree_index() {
     runtime().block_on(async {
         let tmp = tempdir();

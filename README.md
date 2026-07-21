@@ -55,6 +55,7 @@ cargo run --release -- <command> [args…]
 | `index-stats` | (Lance) Per-index coverage: indexed vs unindexed row counts.     |
 | `fragments` | (Lance) List fragments with row, deletion, file, and size info.    |
 | `search`   | (Lance) Nearest-neighbor vector search; appends a `_distance` column.|
+| `diff`     | (Lance) Diff two versions of one dataset (rows, schema, fragments, indices). |
 
 ## Remote datasets
 
@@ -529,6 +530,74 @@ arrs search --column embedding --vector-file q.json -k 10 --columns id,title ds.
 
 > Full-text search (`--query` against inverted/FTS indices, emitting `_score`)
 > is planned as a follow-up.
+
+### Diffing two versions with `diff`
+
+`arrs diff` compares two versions of the *same* dataset and reports what changed
+between them — answering "what happened between version 3 and version 7?".
+Because Lance's manifests carry fragment, schema and index metadata, almost all
+of it is derived without scanning data.
+
+```sh
+arrs diff --from 3 --to 7 dataset.lance
+arrs diff --from-tag release-1 --to-tag release-2 dataset.lance
+arrs diff --from 3 dataset.lance                  # --to defaults to branch latest
+arrs diff --branch dev --from 2 --to 5 dataset.lance
+```
+
+| Flag                 | Meaning                                                              |
+|----------------------|----------------------------------------------------------------------|
+| `--from <N>`         | Left-hand version number (required unless `--from-tag`).             |
+| `--from-tag <name>`  | Left-hand endpoint by tag; resolves to its `(branch, version)`.      |
+| `--to <N>`           | Right-hand version number. Defaults to the latest version of the same branch as `--from`. |
+| `--to-tag <name>`    | Right-hand endpoint by tag.                                          |
+| `--branch <name>`    | Scope both endpoints to this branch (default: `main`).              |
+
+It reports:
+
+- **Row delta** — live row count at each version and the net change, split into
+  rows added vs deleted from fragment metadata (appended fragments and
+  un-tombstoned rows vs removed fragments and new tombstones) rather than only
+  the net. The split is metadata-truthful, not a logical diff: because Lance
+  rewrites whole fragments, a compaction that rewrites `N` unchanged rows counts
+  them as `+N` added and `−N` deleted (net 0), and a version `restore` shows the
+  rows it brings back as added.
+- **Schema changes** — columns added, removed, or retyped (a nullability change
+  counts as a retype, shown as `Int32` → `Int32?`).
+- **Fragment changes** — fragments added, removed, or *rewritten*. Lance never
+  reuses fragment ids, so compaction appears as removed + added; the *rewritten*
+  bucket is reserved for a surviving fragment whose set of data files changed
+  (e.g. a column added via schema evolution appends a new file to existing
+  fragments). Tombstone-only changes are reflected in the row delta, not here.
+- **Index changes** — indices created or dropped between the two versions.
+- **Version log** — the versions in the `(from, to]` range with timestamps and
+  commit messages.
+
+Output is a human-readable summary by default; `--format jsonl` emits a single
+machine-readable JSON record for scripting (the only non-default format
+accepted — `csv`/`table` are rejected).
+
+Exit codes follow `diff(1)` for CI use:
+
+| Code | Meaning                          |
+|------|----------------------------------|
+| `0`  | the two versions are identical   |
+| `1`  | the two versions differ          |
+| `2`  | error (bad usage, missing dataset, cross-branch comparison, …) |
+
+> **Note:** exit code `2` (rather than `1`) is used for *all* command errors
+> across `arrs`, so that exit code `1` unambiguously means "`diff`: the versions
+> differ" and is never confused with a failure.
+
+```sh
+# Machine-readable diff for a CI gate.
+arrs diff --from 3 --to 7 --format jsonl dataset.lance
+
+# Compare two tagged releases and act on the exit code.
+if arrs diff --from-tag v1 --to-tag v2 dataset.lance; then
+  echo "no changes"
+fi
+```
 
 ### Binary columns
 

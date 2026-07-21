@@ -4,6 +4,7 @@
 //! non-Lance adapter. Format-agnostic commands stay one directory up.
 
 pub mod branches;
+pub mod diff;
 pub mod fragments;
 pub mod index_stats;
 pub mod indices;
