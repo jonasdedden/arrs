@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `search` command: Lance nearest-neighbor (ANN / flat KNN) vector search with
   `--column`, `--vector`/`--vector-file`, `-k`, `--nprobes`, `--refine-factor`,
   an appended `_distance` column, and projection support (#16).
+- `stats` command: per-column summary statistics (a `df.describe()` for
+  datasets). Streams the dataset once with memory independent of the row count,
+  reporting count, nulls, min/max (numeric, temporal, string, boolean),
+  mean/stddev (numeric only, sample stddev), and an approximate distinct count
+  (exact up to a cap, then reported as `>10000`). Nested, binary, decimal, and
+  dictionary columns report count/nulls only and never error. Respects
+  `--columns`/`--exclude-columns`, composes with `--where`, and renders in
+  `table`/`jsonl`/`csv`. A default-`None` `Dataset::stats` trait hook leaves the
+  door open for backends to answer from metadata instead of scanning. (#8)
 
 ### Changed
 

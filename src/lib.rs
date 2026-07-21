@@ -6,6 +6,7 @@ pub mod indices;
 pub mod lance;
 pub mod output;
 pub mod projection;
+pub mod stats;
 
 #[cfg(test)]
 mod test_support;

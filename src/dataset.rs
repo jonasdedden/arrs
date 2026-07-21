@@ -67,6 +67,19 @@ pub trait Dataset: Send + Sync + Debug {
     fn lance(&self) -> Option<&dyn LanceCapabilities> {
         None
     }
+
+    /// Optional metadata-derived per-column statistics (the `stats` command).
+    ///
+    /// The default returns `None`, meaning "no shortcut — compute by scanning".
+    /// A backend that stores fragment-level statistics (Lance keeps min/max and
+    /// null counts per fragment) can override this to answer without a full
+    /// scan, mirroring the `lance()` capability hook. The streaming fallback in
+    /// `crate::stats::compute` is always correct, so overriding is a pure
+    /// optimisation. `options` carries the same projection + filter the scan
+    /// fallback would use.
+    async fn stats(&self, _options: &ScanOptions<'_>) -> Option<Result<Vec<ColumnStats>>> {
+        None
+    }
 }
 
 /// Lance-specific operations exposed beyond the format-agnostic `Dataset` trait.
@@ -161,6 +174,37 @@ pub struct IndexInfo {
     pub columns: Vec<String>,
     pub dataset_version: u64,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+/// One row in `arrs stats` output: summary statistics for a single column.
+///
+/// Statistics that don't apply to a column's type are `None` and render as a
+/// blank cell. `count` is the number of non-null values (as in `df.describe()`),
+/// so `count + nulls` is the total number of rows considered.
+#[derive(Debug, Clone)]
+pub struct ColumnStats {
+    /// Column name.
+    pub column: String,
+    /// Human-readable arrow type (e.g. `Int32`, `Timestamp(Microsecond, Some("UTC"))`).
+    pub data_type: String,
+    /// Number of non-null values.
+    pub count: u64,
+    /// Number of null values.
+    pub nulls: u64,
+    /// Minimum value, pre-formatted for display. Numeric, temporal, string, and
+    /// boolean columns only.
+    pub min: Option<String>,
+    /// Maximum value, pre-formatted for display. Same type coverage as `min`.
+    pub max: Option<String>,
+    /// Arithmetic mean. Numeric columns only. `NaN` when the column contains any
+    /// `NaN` (matching numpy's plain mean).
+    pub mean: Option<f64>,
+    /// Sample standard deviation (ddof = 1). Numeric columns with at least two
+    /// non-null values only.
+    pub stddev: Option<f64>,
+    /// Distinct-value count, either exact (e.g. `42`) or a capped marker
+    /// (e.g. `>10000`) once cardinality exceeds the tracking cap.
+    pub distinct: Option<String>,
 }
 
 /// One row in `arrs tags` output.
