@@ -97,8 +97,8 @@ denied) are surfaced with the offending URI and the underlying cause.
 |-----------------------------|---------|-------------------------------------------------------------|
 | `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`, `jsonl` everywhere else. |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
-| `--columns <a,b,…>`         | –       | Comma-separated include list. User order is preserved.      |
-| `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Takes precedence over `--columns`.|
+| `--columns <a,b,…>`         | –       | Comma-separated include list. Supports glob patterns and nested paths (see below). User order is preserved. |
+| `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Supports the same patterns/paths. Takes precedence over `--columns`.|
 | `--where <predicate>`       | –       | Keep only rows matching a SQL-style predicate. Supported by `cat`, `head`, `tail`, `rowcount`, `sample`, `stats`, `freq`. See below. |
 
 ## Examples
@@ -156,6 +156,60 @@ Nested, binary, decimal, and dictionary columns report only `count`/`nulls`
 while `min`/`max` ignore `NaN` and report the real numeric range. `stats`
 respects `--columns`/`--exclude-columns` and `--where`, and honours `--format`
 (`table` by default, plus `jsonl`/`csv`).
+
+### Projecting columns with `--columns` / `--exclude-columns`
+
+Both flags accept three kinds of token, resolved against the dataset schema:
+
+```sh
+# Exact top-level names (user order preserved).
+arrs cat --columns id,score dataset.lance
+
+# Glob patterns: '*' (any run of characters) and '?' (exactly one), matched
+# against top-level column names. Matches expand in schema order at the
+# position the pattern occupies.
+arrs head --columns 'emb_*' dataset.lance
+arrs cat  --exclude-columns 'raw_*,debug_*' dataset.lance
+
+# Nested field paths: dot-separated access into struct columns.
+arrs head --columns meta.user.id,id dataset.lance
+```
+
+Rules:
+
+- **Globs** match top-level names only. A pattern that matches nothing is an
+  error (like an unknown exact name). A column matched by both a glob and an
+  explicit name appears once, at its first position.
+- **Nested paths** are validated against the Arrow schema, so `meta.nope`
+  (unknown field) and `score.x` (traversal into a non-struct) fail with a clear
+  message instead of a backend panic.
+- **Exact-match-first (escaping):** a token that exactly matches a real
+  top-level column always selects that literal column — this is how you pick a
+  column literally named `a*b` or `meta.user`, and it wins over glob and path
+  interpretation.
+
+**Nested output shape (JSONL).** A projected nested leaf is emitted as a single
+**flat column named by its full dotted path** — this is what Lance's scanner
+returns natively. For example `--columns meta.user.id,id` yields:
+
+```json
+{"meta.user.id": 10, "id": 1}
+```
+
+The same flat shape is produced by `head`, `cat`, `take`, `sample`, `tail` and
+by `schema --type arrow` (which lists a `meta.user.id` field). Projecting a
+whole struct column instead (e.g. `--columns meta`) keeps it nested:
+`{"meta": {"user": {"id": 10, "name": "alice"}, "source": "web"}}`.
+`schema --type physical` shows the Lance-native pruned field tree rather than
+the flat view.
+
+**Excluding a nested path** prunes that leaf (or subtree) and emits the struct's
+surviving leaves as flat dotted columns: `--exclude-columns meta.user.id` yields
+`meta.user.name` and `meta.source` (the rest of `meta`), while untouched struct
+columns stay whole.
+
+`--where` is applied *before* projection, so you can filter on a column you
+project away (e.g. `--columns id --where 'score > 1.5'`).
 
 ### Filtering rows with `--where`
 

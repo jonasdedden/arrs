@@ -7,18 +7,19 @@ use crate::cli::{BinaryFormat, Format};
 use crate::output::table::TableStyle;
 use crate::output::{RowWriter, make_writer};
 
+/// Build the Arrow schema of the projected output.
+///
+/// Each entry is either a top-level column name or a validated nested path
+/// (`meta.user.id`); a nested path becomes a single flat leaf field whose name
+/// is the full dotted path, matching the shape Lance's scanner returns. See
+/// [`crate::projection::projected_field`].
 pub fn project_arrow_schema(schema: &Schema, projection: Option<&[String]>) -> SchemaRef {
     match projection {
         None => Arc::new(schema.clone()),
         Some(cols) => {
             let fields: Vec<_> = cols
                 .iter()
-                .map(|n| {
-                    schema
-                        .field_with_name(n)
-                        .expect("projection validated against schema")
-                        .clone()
-                })
+                .map(|n| crate::projection::projected_field(schema, n))
                 .collect();
             Arc::new(Schema::new(fields))
         }

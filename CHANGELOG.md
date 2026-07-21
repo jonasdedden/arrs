@@ -9,13 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `freq` command: value counts for a column. Emits one `value`/`count`/`percent`
-  row per distinct value (with an explicit `NULL` row), rendered in any output
-  format. Supports `-n/--limit` (≥ 1; folding the remainder into an `<other>`
-  row), `--sort count|value` with type-aware ordering (numbers numerically,
-  temporals chronologically, `NULL`/`NaN` last) and a deterministic string
-  tie-break, and `--where` composition; rejects nested/binary columns and guards
-  against runaway cardinality (~1M distinct values). (#9)
 - `--where <predicate>` SQL-style predicate filtering for `cat`, `head`, `tail`,
   `rowcount`, and `sample`. The filter is applied before row selection, and
   filtered `rowcount` uses the backend's native filtered count (pushed into
@@ -48,6 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   branch. Accepts RFC 3339 with offset, a naive datetime (interpreted as UTC),
   or a date (midnight UTC); mutually exclusive with `--version`/`--tag`, combines
   with `--branch`; echoes the resolved version on stderr. (#18)
+- `freq` command: value counts for a column. Emits one `value`/`count`/`percent`
+  row per distinct value (with an explicit `NULL` row), rendered in any output
+  format. Supports `-n/--limit` (≥ 1; folding the remainder into an `<other>`
+  row), `--sort count|value` with type-aware ordering (numbers numerically,
+  temporals chronologically, `NULL`/`NaN` last) and a deterministic string
+  tie-break, and `--where` composition; rejects nested/binary columns and guards
+  against runaway cardinality (~1M distinct values). (#9)
+- Richer `--columns` / `--exclude-columns` projection: shell-style glob patterns
+  (`*`, `?`) matched against top-level column names (schema-order expansion,
+  no-match is an error), and nested struct field paths (`meta.user.id`) validated
+  against the Arrow schema. A token that exactly matches a top-level column is
+  taken literally (escapes globs/dots). Nested leaves are surfaced as flat,
+  dotted-named columns (matching Lance's scanner) across `head`/`cat`/`take`/
+  `sample`/`tail`/`schema`; excluding a nested path prunes that leaf and flattens
+  the struct's surviving leaves. (#10)
 
 ### Changed
 

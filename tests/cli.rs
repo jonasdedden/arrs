@@ -34,7 +34,7 @@ fn project(schema: &SchemaRef, projection: Option<&[String]>) -> SchemaRef {
         Some(cols) => {
             let fields: Vec<_> = cols
                 .iter()
-                .map(|n| schema.field_with_name(n).unwrap().clone())
+                .map(|n| projection::projected_field(schema, n))
                 .collect();
             Arc::new(arrow_schema::Schema::new(fields))
         }
@@ -171,6 +171,38 @@ async fn collect_take(
         w.start(&projected)?;
         if !indices.is_empty() {
             let batch = ds.take(&indices, None).await?;
+            w.write_batch(&batch)?;
+        }
+        w.finish()?;
+    }
+    Ok(String::from_utf8(out).unwrap())
+}
+
+/// Like `collect_take` but with a projection, exercising the nested-path
+/// flattening on the `take` code path.
+async fn collect_take_cols(
+    input: &Path,
+    idx: &str,
+    columns: Option<&[String]>,
+    exclude: Option<&[String]>,
+) -> arrs::Result<String> {
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
+    let s = ds.arrow_schema();
+    let proj = projection::resolve(&s, columns, exclude)?;
+    let projected = project(&s, proj.as_deref());
+    let rowcount = ds.count_rows(None).await?;
+    let indices = indices::resolve(idx, rowcount)?;
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut w = make_writer(
+            Format::Jsonl,
+            BinaryFormat::None,
+            TableStyle::Plain,
+            Cursor::new(&mut out),
+        );
+        w.start(&projected)?;
+        if !indices.is_empty() {
+            let batch = ds.take(&indices, proj.as_deref()).await?;
             w.write_batch(&batch)?;
         }
         w.finish()?;
@@ -618,6 +650,307 @@ fn unknown_column_errors() {
         .unwrap_err();
         assert!(matches!(err, arrs::error::Error::UnknownColumn { .. }));
     });
+}
+
+// -------------------- globs & nested paths (#10) --------------------
+
+fn cols(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| s.to_string()).collect()
+}
+
+fn keys(line: &str) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_str(line).unwrap();
+    v.as_object().unwrap().keys().cloned().collect()
+}
+
+#[test]
+fn glob_include_expands_in_schema_order_through_cat() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let out = collect_cat(
+            vec![p],
+            Format::Jsonl,
+            BinaryFormat::None,
+            Some(&cols(&["id", "emb_*"])),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            keys(out.lines().next().unwrap()),
+            cols(&["id", "emb_0", "emb_1", "emb_2"])
+        );
+    });
+}
+
+#[test]
+fn glob_exclude_through_cat() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let out = collect_cat(
+            vec![p],
+            Format::Jsonl,
+            BinaryFormat::None,
+            None,
+            Some(&cols(&["emb_*"])),
+        )
+        .await
+        .unwrap();
+        // meta untouched by the glob stays a whole struct column.
+        assert_eq!(
+            keys(out.lines().next().unwrap()),
+            cols(&["id", "score", "meta"])
+        );
+    });
+}
+
+#[test]
+fn glob_no_match_errors_through_cat() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let err = collect_cat(
+            vec![p],
+            Format::Jsonl,
+            BinaryFormat::None,
+            Some(&cols(&["nope_*"])),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, arrs::error::Error::NoGlobMatch { .. }));
+    });
+}
+
+#[test]
+fn nested_path_through_cat_flattens_to_dotted_columns() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let out = collect_cat(
+            vec![p],
+            Format::Jsonl,
+            BinaryFormat::None,
+            Some(&cols(&["meta.user.id", "id"])),
+            None,
+        )
+        .await
+        .unwrap();
+        let line = out.lines().next().unwrap();
+        assert_eq!(keys(line), cols(&["meta.user.id", "id"]));
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["meta.user.id"], 10);
+        assert_eq!(v["id"], 1);
+    });
+}
+
+#[test]
+fn nested_and_glob_combined_through_cat() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let out = collect_cat(
+            vec![p],
+            Format::Jsonl,
+            BinaryFormat::None,
+            Some(&cols(&["emb_*", "meta.user.id"])),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            keys(out.lines().next().unwrap()),
+            cols(&["emb_0", "emb_1", "emb_2", "meta.user.id"])
+        );
+    });
+}
+
+#[test]
+fn nested_path_through_take_flattens() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let out = collect_take_cols(&p, "0", Some(&cols(&["meta.user.name", "id"])), None)
+            .await
+            .unwrap();
+        let line = out.lines().next().unwrap();
+        assert_eq!(keys(line), cols(&["meta.user.name", "id"]));
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["meta.user.name"], "alice");
+        assert_eq!(v["id"], 1);
+    });
+}
+
+/// The header schema built by `project_arrow_schema`/`project` must equal the
+/// actual batch schema Lance's scanner returns for a nested projection — the
+/// JSONL/CSV writers rely on this being exact.
+#[test]
+fn nested_projection_header_matches_scan_output() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let ds = dataset::open(p.to_str().unwrap(), None).await.unwrap();
+        let s = ds.arrow_schema();
+        let projcols = cols(&["meta.source", "meta.user.name", "id", "emb_1"]);
+        let proj = projection::resolve(&s, Some(&projcols), None).unwrap();
+        let header = project(&s, proj.as_deref());
+        let options = ScanOptions {
+            projection: proj.as_deref(),
+            filter: None,
+        };
+        let mut stream = ds.scan(&options).await.unwrap();
+        let batch = stream.next().await.unwrap().unwrap();
+        assert_eq!(header.fields().len(), batch.schema().fields().len());
+        for (h, b) in header.fields().iter().zip(batch.schema().fields().iter()) {
+            assert_eq!(h.name(), b.name(), "field name mismatch");
+            assert_eq!(
+                h.data_type(),
+                b.data_type(),
+                "type mismatch for {}",
+                h.name()
+            );
+            assert_eq!(
+                h.is_nullable(),
+                b.is_nullable(),
+                "nullability mismatch for {}",
+                h.name()
+            );
+        }
+    });
+}
+
+#[test]
+fn exclude_nested_leaf_flattens_siblings_through_cat() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let out = collect_cat(
+            vec![p],
+            Format::Jsonl,
+            BinaryFormat::None,
+            None,
+            Some(&cols(&["meta.user.id", "emb_*"])),
+        )
+        .await
+        .unwrap();
+        let line = out.lines().next().unwrap();
+        assert_eq!(
+            keys(line),
+            cols(&["id", "score", "meta.user.name", "meta.source"])
+        );
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["meta.user.name"], "alice");
+        assert_eq!(v["meta.source"], "web");
+    });
+}
+
+#[test]
+fn nested_invalid_field_errors_through_cat() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let err = collect_cat(
+            vec![p],
+            Format::Jsonl,
+            BinaryFormat::None,
+            Some(&cols(&["meta.nope"])),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, arrs::error::Error::UnknownNestedField { .. }));
+    });
+}
+
+#[test]
+fn nested_non_struct_traversal_errors_through_cat() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let err = collect_cat(
+            vec![p],
+            Format::Jsonl,
+            BinaryFormat::None,
+            Some(&cols(&["score.x"])),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, arrs::error::Error::NonStructField { .. }));
+    });
+}
+
+/// `--where` filters rows *before* projection, so filtering on a column that is
+/// projected away still works.
+#[test]
+fn where_on_projected_away_column_still_filters() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = common::write_struct(&tmp, "st").await;
+        let ds = dataset::open(p.to_str().unwrap(), None).await.unwrap();
+        let s = ds.arrow_schema();
+        let proj = projection::resolve(&s, Some(&cols(&["id"])), None).unwrap();
+        let options = ScanOptions {
+            projection: proj.as_deref(),
+            filter: Some("score > 1.5"),
+        };
+        use arrow_array::Array as _;
+        let mut stream = ds.scan(&options).await.unwrap();
+        let mut ids_out = Vec::new();
+        while let Some(b) = stream.next().await {
+            let b = b.unwrap();
+            assert_eq!(b.num_columns(), 1, "only id projected");
+            let col = b
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .unwrap();
+            ids_out.extend(col.values().iter().copied());
+        }
+        // Only row 2 (score 2.5) passes; its id is 2.
+        assert_eq!(ids_out, vec![2]);
+    });
+}
+
+/// End-to-end through the real `head` binary on a nested projection.
+#[test]
+fn head_nested_path_end_to_end_binary() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { common::write_struct(&tmp, "st").await });
+    let out = run_cli(
+        &["head", "--format", "jsonl", "--columns", "meta.user.id,id"],
+        &p,
+    );
+    assert!(
+        out.status.success(),
+        "head failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let first = stdout.lines().next().expect("at least one row");
+    let v: serde_json::Value = serde_json::from_str(first).unwrap();
+    assert_eq!(v["meta.user.id"], 10);
+    assert_eq!(v["id"], 1);
+}
+
+/// `schema --type arrow` reports nested projections as flat dotted fields.
+#[test]
+fn schema_arrow_nested_flat_fields() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { common::write_struct(&tmp, "st").await });
+    let out = run_cli(&["schema", "--columns", "meta.user.id,id"], &p);
+    assert!(
+        out.status.success(),
+        "schema failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("meta.user.id"),
+        "flat dotted field missing:\n{stdout}"
+    );
 }
 
 #[test]
