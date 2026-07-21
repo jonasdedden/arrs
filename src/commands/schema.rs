@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::Result;
 use crate::cli::{LanceArgs, SchemaType};
 use crate::commands::common::project_arrow_schema;
@@ -7,7 +5,7 @@ use crate::dataset;
 use crate::projection;
 
 pub async fn run(
-    input: &Path,
+    input: &str,
     ty: SchemaType,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,

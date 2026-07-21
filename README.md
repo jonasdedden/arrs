@@ -51,6 +51,32 @@ cargo run --release -- <command> [args…]
 | `indices`  | (Lance) List indices defined on the dataset.                        |
 | `fragments` | (Lance) List fragments with row, deletion, file, and size info.    |
 
+## Remote datasets
+
+Every command accepts an object-store URI wherever it accepts a local path, so
+you can point `arrs` straight at a bucket:
+
+```sh
+arrs head -n 5 s3://my-bucket/datasets/embeddings.lance
+arrs rowcount gs://analytics/events.lance
+arrs schema az://container/data.lance
+arrs versions s3://my-bucket/datasets/embeddings.lance
+```
+
+| Scheme     | Backend                     | Credentials (ambient environment)                                    |
+|------------|-----------------------------|----------------------------------------------------------------------|
+| `s3://`    | AWS S3 (and S3-compatible)  | Standard AWS SDK chain: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, `AWS_PROFILE`, `AWS_REGION`, instance/role metadata. |
+| `gs://`    | Google Cloud Storage        | `GOOGLE_APPLICATION_CREDENTIALS` (service-account JSON), or `gcloud` application-default credentials. |
+| `az://`    | Azure Blob Storage          | `AZURE_STORAGE_ACCOUNT_NAME` plus `AZURE_STORAGE_ACCOUNT_KEY` / `AZURE_STORAGE_SAS_TOKEN` (and other standard Azure env vars). |
+| `file://`  | Local filesystem            | none.                                                                 |
+| *(none)*   | Local filesystem            | none.                                                                 |
+
+Credentials are read exclusively from the ambient environment — there are no
+`arrs`-specific credential flags. A bare path (relative or absolute), with or
+without a `file://` prefix, always resolves to the local filesystem exactly as
+before. Errors from the object store (missing credentials, 404, permission
+denied) are surfaced with the offending URI and the underlying cause.
+
 ## Global flags
 
 | Flag                        | Default | Purpose                                                     |

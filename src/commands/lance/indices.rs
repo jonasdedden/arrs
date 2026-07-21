@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::builder::{ListBuilder, StringBuilder};
@@ -12,7 +11,7 @@ use crate::dataset;
 use crate::error::Error;
 
 pub async fn run(
-    input: &Path,
+    input: &str,
     lance: &LanceArgs,
     format: Format,
     binary_format: BinaryFormat,
@@ -20,7 +19,7 @@ pub async fn run(
     let ds = dataset::open(input, Some(lance)).await?;
     let lance_caps = ds.lance().ok_or_else(|| Error::NotLance {
         command: "indices",
-        path: input.to_path_buf(),
+        path: input.to_string(),
     })?;
 
     let indices = lance_caps.list_indices().await?;

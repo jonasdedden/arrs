@@ -50,7 +50,7 @@ async fn collect_cat(
 ) -> arrs::Result<String> {
     let mut out: Vec<u8> = Vec::new();
     {
-        let first = dataset::open(&inputs[0], None).await?;
+        let first = dataset::open(inputs[0].to_str().unwrap(), None).await?;
         let s = first.arrow_schema();
         let proj = projection::resolve(&s, columns, exclude)?;
         let projected = project(&s, proj.as_deref());
@@ -62,7 +62,7 @@ async fn collect_cat(
         );
         w.start(&projected)?;
         for p in &inputs {
-            let ds = dataset::open(p, None).await?;
+            let ds = dataset::open(p.to_str().unwrap(), None).await?;
             let options = ScanOptions {
                 projection: proj.as_deref(),
                 filter: None,
@@ -83,7 +83,7 @@ async fn collect_head(
     format: Format,
     binary_format: BinaryFormat,
 ) -> arrs::Result<String> {
-    let ds = dataset::open(input, None).await?;
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
     let mut out: Vec<u8> = Vec::new();
@@ -124,7 +124,7 @@ async fn collect_tail(
     format: Format,
     binary_format: BinaryFormat,
 ) -> arrs::Result<String> {
-    let ds = dataset::open(input, None).await?;
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
     let rowcount = ds.count_rows(None).await?;
@@ -155,7 +155,7 @@ async fn collect_take(
     format: Format,
     binary_format: BinaryFormat,
 ) -> arrs::Result<String> {
-    let ds = dataset::open(input, None).await?;
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
     let rowcount = ds.count_rows(None).await?;
@@ -189,7 +189,7 @@ async fn collect_sample(
     use rand::prelude::*;
     use rand_chacha::ChaCha20Rng;
 
-    let ds = dataset::open(input, None).await?;
+    let ds = dataset::open(input.to_str().unwrap(), None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
     let rowcount = ds.count_rows(None).await?;
@@ -250,7 +250,7 @@ fn rowcount_is_5_for_simple_fixture() {
     runtime().block_on(async {
         let tmp = tempdir();
         let p = write_simple(&tmp, "simple").await;
-        let ds = dataset::open(&p, None).await.unwrap();
+        let ds = dataset::open(p.to_str().unwrap(), None).await.unwrap();
         assert_eq!(ds.count_rows(None).await.unwrap(), 5);
     });
 }
@@ -666,7 +666,7 @@ fn format_on_schema_errors() {
             columns: None,
             exclude_columns: None,
             command: Command::Schema {
-                input: std::path::PathBuf::from("does-not-matter"),
+                input: "does-not-matter".to_string(),
                 ty: arrs::cli::SchemaType::Arrow,
                 lance: arrs::cli::LanceArgs::default(),
             },
@@ -688,7 +688,7 @@ fn format_on_rowcount_errors() {
             columns: None,
             exclude_columns: None,
             command: Command::Rowcount {
-                input: std::path::PathBuf::from("does-not-matter"),
+                input: "does-not-matter".to_string(),
                 filter: FilterArg::default(),
                 lance: arrs::cli::LanceArgs::default(),
             },

@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt64Array};
@@ -10,11 +9,11 @@ use crate::commands::common::make_stdout_writer;
 use crate::dataset;
 use crate::error::Error;
 
-pub async fn run(input: &Path, format: Format, binary_format: BinaryFormat) -> Result<()> {
+pub async fn run(input: &str, format: Format, binary_format: BinaryFormat) -> Result<()> {
     let ds = dataset::open(input, None).await?;
     let lance = ds.lance().ok_or_else(|| Error::NotLance {
         command: "branches",
-        path: input.to_path_buf(),
+        path: input.to_string(),
     })?;
 
     let branches = lance.list_branches().await?;

@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -19,8 +17,8 @@ pub enum Error {
         "input schemas differ: '{left}' and '{right}' do not match on field '{field}'; cat requires strictly matching schemas"
     )]
     SchemaMismatch {
-        left: PathBuf,
-        right: PathBuf,
+        left: String,
+        right: String,
         field: String,
     },
 
@@ -51,7 +49,7 @@ pub enum Error {
 
     #[error("failed to open lance dataset at {path}")]
     LanceOpen {
-        path: PathBuf,
+        path: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
@@ -60,16 +58,13 @@ pub enum Error {
     Lance(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     #[error("unrecognised dataset format at {path}")]
-    UnknownFormat { path: PathBuf },
+    UnknownFormat { path: String },
 
     #[error("--branch/--version/--tag are only valid for Lance datasets ({path})")]
-    LanceFlagsOnNonLance { path: PathBuf },
+    LanceFlagsOnNonLance { path: String },
 
     #[error("'{command}' is only valid for Lance datasets ({path})")]
-    NotLance {
-        command: &'static str,
-        path: PathBuf,
-    },
+    NotLance { command: &'static str, path: String },
 
     #[error(
         "tag '{tag}' is on branch '{tag_branch}', not '{requested_branch}'; remove --branch or pass --branch {tag_branch}"
