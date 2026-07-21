@@ -77,6 +77,16 @@ without a `file://` prefix, always resolves to the local filesystem exactly as
 before. Errors from the object store (missing credentials, 404, permission
 denied) are surfaced with the offending URI and the underlying cause.
 
+> **Note:** `file://` URIs must be absolute (`file:///abs/path.lance`); a
+> relative `file://path` resolves confusingly against the current directory —
+> use a bare relative path instead.
+
+> **Note:** a `gs://` URI with no ambient credentials (neither
+> `GOOGLE_APPLICATION_CREDENTIALS` nor application-default credentials) can
+> stall ~90–100s while the underlying `object_store` probes the GCE metadata
+> server before erroring — this is upstream behavior, not arrs. (`s3://` errors
+> within seconds; `az://` errors instantly.)
+
 ## Global flags
 
 | Flag                        | Default | Purpose                                                     |
