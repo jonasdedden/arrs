@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::Float32Array;
-use arrow_array::RecordBatch;
-use arrow_array::RecordBatchReader;
+use arrow::buffer::NullBuffer;
+use arrow_array::{
+    Array, ArrayRef, Float32Array, RecordBatch, RecordBatchReader, StructArray, make_array,
+};
 use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
@@ -127,6 +128,63 @@ fn looks_like_source_location(tail: &str) -> bool {
             .rsplit(':')
             .take(2)
             .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// True when `entry` is a nested path (contains `.`) that does not name an
+/// exact top-level column — i.e. it must be walked into a struct.
+fn is_nested_path(schema: &ArrowSchema, entry: &str) -> bool {
+    entry.contains('.') && schema.field_with_name(entry).is_err()
+}
+
+/// Rebuild `batch` (a pruned-struct projection as returned by `Dataset::take`)
+/// into the flat, dotted-name shape produced by the scan path, so `take` output
+/// matches `head`/`cat` and the header from `project_arrow_schema`.
+fn flatten_nested_projection(
+    batch: &RecordBatch,
+    schema: &ArrowSchema,
+    projection: &[String],
+) -> Result<RecordBatch> {
+    let mut fields = Vec::with_capacity(projection.len());
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(projection.len());
+    for entry in projection {
+        fields.push(crate::projection::projected_field(schema, entry));
+        columns.push(extract_column(batch, entry)?);
+    }
+    let out_schema = Arc::new(ArrowSchema::new(fields));
+    Ok(RecordBatch::try_new(out_schema, columns)?)
+}
+
+/// Pull one projected column out of the pruned-struct `batch`. A top-level name
+/// (even a literal dotted one present in the batch) is taken as-is; otherwise
+/// the entry is a dotted path walked into the struct columns, with ancestor
+/// null masks propagated onto the leaf (a null parent yields a null leaf, as the
+/// scan path does).
+fn extract_column(batch: &RecordBatch, entry: &str) -> Result<ArrayRef> {
+    if let Some(col) = batch.column_by_name(entry) {
+        return Ok(col.clone());
+    }
+    let mut segments = entry.split('.');
+    let head = segments.next().expect("non-empty path");
+    let mut current = batch
+        .column_by_name(head)
+        .expect("projection validated against schema")
+        .clone();
+    let mut nulls: Option<NullBuffer> = current.nulls().cloned();
+    for seg in segments {
+        let st = current
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("intermediate path segment is a struct");
+        let child = st
+            .column_by_name(seg)
+            .expect("projection validated against schema")
+            .clone();
+        nulls = NullBuffer::union(nulls.as_ref(), child.nulls());
+        current = child;
+    }
+    // Re-attach the accumulated ancestor validity onto the leaf.
+    let data = current.to_data().into_builder().nulls(nulls).build()?;
+    Ok(make_array(data))
 }
 
 async fn apply_checkout(mut ds: InnerLance, lance: Option<&LanceArgs>) -> Result<InnerLance> {
@@ -334,10 +392,21 @@ impl Dataset for LanceDataset {
 
     async fn take(&self, indices: &[u64], projection: Option<&[String]>) -> Result<RecordBatch> {
         let req = self.projection_request(projection);
-        self.inner
+        let batch = self
+            .inner
             .take(indices, req)
             .await
-            .map_err(|e| Error::Lance(Box::new(e)))
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        // `Dataset::take` returns nested projections as *pruned structs*, whereas
+        // the scan path (head/cat/…) returns them as *flat, dotted-named leaf
+        // columns*. Flatten here so every command surfaces the same shape (and
+        // matches the header built by `project_arrow_schema`).
+        match projection {
+            Some(cols) if cols.iter().any(|c| is_nested_path(&self.arrow_schema, c)) => {
+                flatten_nested_projection(&batch, &self.arrow_schema, cols)
+            }
+            _ => Ok(batch),
+        }
     }
 
     fn lance(&self) -> Option<&dyn LanceCapabilities> {
@@ -809,6 +878,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::cast::AsArray as _;
+    use arrow_array::types::Int64Type;
+    use arrow_array::{Int64Array, StringArray};
+    use arrow_schema::{Field, Fields};
+
     use super::*;
 
     /// Shorthand: build the expected UTC instant from components.
@@ -897,5 +973,43 @@ mod tests {
     #[test]
     fn rejects_empty() {
         assert!(matches!(parse_as_of(""), Err(Error::InvalidAsOf(_))));
+    }
+
+    /// `extract_column` must propagate an ancestor struct's null mask onto the
+    /// extracted leaf (a null parent yields a null leaf). This path is not
+    /// reachable through Lance — which drops struct-level validity at write time
+    /// — so it is exercised directly on an in-memory batch.
+    #[test]
+    fn extract_column_propagates_parent_nulls() {
+        let user_fields = Fields::from(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+        ]);
+        // Leaf arrays have NO nulls of their own.
+        let user = StructArray::new(
+            user_fields.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![10, 20, 30])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+            // Parent `user` struct is null in the middle row.
+            Some(NullBuffer::from(vec![true, false, true])),
+        );
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "user",
+            DataType::Struct(user_fields),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(user)]).unwrap();
+
+        let leaf = extract_column(&batch, "user.id").unwrap();
+        let ids = leaf.as_primitive::<Int64Type>();
+        assert_eq!(ids.len(), 3);
+        assert!(!ids.is_null(0));
+        assert_eq!(ids.value(0), 10);
+        // Null parent row -> null leaf, even though the child array had a value.
+        assert!(ids.is_null(1));
+        assert!(!ids.is_null(2));
+        assert_eq!(ids.value(2), 30);
     }
 }

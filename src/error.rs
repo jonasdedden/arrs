@@ -15,6 +15,26 @@ pub enum Error {
     #[error("column '{0}' appears more than once in --columns/--exclude-columns")]
     DuplicateColumn(String),
 
+    #[error("pattern '{pattern}' matches no columns (available: {available})")]
+    NoGlobMatch { pattern: String, available: String },
+
+    #[error("unknown field '{field}' in '{parent}' for path '{path}' (available: {available})")]
+    UnknownNestedField {
+        path: String,
+        parent: String,
+        field: String,
+        available: String,
+    },
+
+    #[error(
+        "cannot descend into '{segment}' in path '{path}': '{segment}' is not a struct (found {data_type})"
+    )]
+    NonStructField {
+        path: String,
+        segment: String,
+        data_type: String,
+    },
+
     #[error(
         "input schemas differ: '{left}' and '{right}' do not match on field '{field}'; cat requires strictly matching schemas"
     )]

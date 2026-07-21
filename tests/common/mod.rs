@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::{
-    BinaryArray, BooleanArray, Float64Array, Int32Array, RecordBatch, RecordBatchIterator,
-    StringArray, TimestampMicrosecondArray,
+    BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array, RecordBatch,
+    RecordBatchIterator, StringArray, StructArray, TimestampMicrosecondArray,
 };
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use tempfile::TempDir;
 
 /// Build an arrow schema that exercises the common primitive types plus one list.
@@ -138,6 +138,83 @@ pub fn with_binary_batch() -> RecordBatch {
 pub async fn write_with_binary(tmp: &TempDir, name: &str) -> PathBuf {
     let path = tmp.path().join(name);
     let batch = with_binary_batch();
+    let schema = batch.schema();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+    arrs::lance::write_dataset(&path, iter).await.unwrap();
+    path
+}
+
+/// Fields of the nested `user` struct inside `meta`.
+fn user_fields() -> Fields {
+    Fields::from(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("name", DataType::Utf8, true),
+    ])
+}
+
+/// Fields of the top-level `meta` struct column.
+fn meta_fields() -> Fields {
+    Fields::from(vec![
+        Field::new("user", DataType::Struct(user_fields()), true),
+        Field::new("source", DataType::Utf8, true),
+    ])
+}
+
+/// Schema exercising nested structs (`meta.user.id`, …), a non-struct scalar
+/// (`score`) for bad-path tests, and a family of `emb_*` columns for globs.
+pub fn struct_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("score", DataType::Float64, true),
+        Field::new("emb_0", DataType::Float64, true),
+        Field::new("emb_1", DataType::Float64, true),
+        Field::new("emb_2", DataType::Float64, true),
+        Field::new("meta", DataType::Struct(meta_fields()), true),
+    ]))
+}
+
+pub fn struct_batch() -> RecordBatch {
+    let ids = Int32Array::from(vec![1, 2, 3]);
+    let scores = Float64Array::from(vec![Some(1.0), Some(2.5), None]);
+    let emb0 = Float64Array::from(vec![Some(0.1), Some(0.2), Some(0.3)]);
+    let emb1 = Float64Array::from(vec![Some(1.1), Some(1.2), Some(1.3)]);
+    let emb2 = Float64Array::from(vec![Some(2.1), Some(2.2), Some(2.3)]);
+
+    let user = StructArray::new(
+        user_fields(),
+        vec![
+            Arc::new(Int64Array::from(vec![Some(10), Some(20), Some(30)])),
+            Arc::new(StringArray::from(vec![Some("alice"), None, Some("carol")])),
+        ],
+        None,
+    );
+    let meta = StructArray::new(
+        meta_fields(),
+        vec![
+            Arc::new(user),
+            Arc::new(StringArray::from(vec![Some("web"), Some("api"), None])),
+        ],
+        None,
+    );
+
+    RecordBatch::try_new(
+        struct_schema(),
+        vec![
+            Arc::new(ids),
+            Arc::new(scores),
+            Arc::new(emb0),
+            Arc::new(emb1),
+            Arc::new(emb2),
+            Arc::new(meta),
+        ],
+    )
+    .unwrap()
+}
+
+/// Write the nested-struct dataset to a fresh Lance directory inside `tmp`.
+pub async fn write_struct(tmp: &TempDir, name: &str) -> PathBuf {
+    let path = tmp.path().join(name);
+    let batch = struct_batch();
     let schema = batch.schema();
     let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
     arrs::lance::write_dataset(&path, iter).await.unwrap();
