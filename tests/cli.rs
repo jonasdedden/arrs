@@ -243,130 +243,6 @@ async fn collect_scan_where(input: &Path, filter: &str) -> arrs::Result<String> 
     Ok(String::from_utf8(out).unwrap())
 }
 
-/// Filtered `tail`: the last `limit` *matching* rows. Mirrors the streaming
-/// ring-buffer path in `commands::tail`.
-async fn collect_tail_where(input: &Path, limit: u64, filter: &str) -> arrs::Result<String> {
-    use std::collections::VecDeque;
-
-    let ds = dataset::open(input, None).await?;
-    let s = ds.arrow_schema();
-    let projected = project(&s, None);
-    let mut out: Vec<u8> = Vec::new();
-    {
-        let mut w = make_writer(
-            Format::Jsonl,
-            BinaryFormat::None,
-            TableStyle::Plain,
-            Cursor::new(&mut out),
-        );
-        w.start(&projected)?;
-        if limit > 0 {
-            let options = ScanOptions {
-                projection: None,
-                filter: Some(filter),
-            };
-            let mut stream = ds.scan(&options).await?;
-            let mut buffered: VecDeque<arrow_array::RecordBatch> = VecDeque::new();
-            let mut buffered_rows: u64 = 0;
-            while let Some(batch) = stream.next().await {
-                let batch = batch?;
-                if batch.num_rows() == 0 {
-                    continue;
-                }
-                buffered_rows += batch.num_rows() as u64;
-                buffered.push_back(batch);
-                while let Some(front) = buffered.front() {
-                    let front_rows = front.num_rows() as u64;
-                    if buffered_rows - front_rows >= limit {
-                        buffered_rows -= front_rows;
-                        buffered.pop_front();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            let mut skip = buffered_rows - limit.min(buffered_rows);
-            for batch in buffered {
-                let rows = batch.num_rows() as u64;
-                if skip >= rows {
-                    skip -= rows;
-                    continue;
-                }
-                w.write_batch(&batch.slice(skip as usize, (rows - skip) as usize))?;
-                skip = 0;
-            }
-        }
-        w.finish()?;
-    }
-    Ok(String::from_utf8(out).unwrap())
-}
-
-/// Filtered `sample`: reservoir-sample `limit` matching rows. Mirrors the
-/// streaming path in `commands::sample`.
-async fn collect_sample_where(
-    input: &Path,
-    limit: u64,
-    seed: u64,
-    filter: &str,
-) -> arrs::Result<String> {
-    use rand::SeedableRng;
-    use rand::prelude::*;
-    use rand_chacha::ChaCha20Rng;
-
-    let ds = dataset::open(input, None).await?;
-    let s = ds.arrow_schema();
-    let projected = project(&s, None);
-    let mut out: Vec<u8> = Vec::new();
-    {
-        let mut w = make_writer(
-            Format::Jsonl,
-            BinaryFormat::None,
-            TableStyle::Plain,
-            Cursor::new(&mut out),
-        );
-        w.start(&projected)?;
-        if limit > 0 {
-            let options = ScanOptions {
-                projection: None,
-                filter: Some(filter),
-            };
-            let mut stream = ds.scan(&options).await?;
-            let cap = limit as usize;
-            let mut rng = ChaCha20Rng::seed_from_u64(seed);
-            let mut reservoir: Vec<arrow_array::RecordBatch> = Vec::with_capacity(cap);
-            let mut seen: u64 = 0;
-            while let Some(batch) = stream.next().await {
-                let batch = batch?;
-                for r in 0..batch.num_rows() {
-                    let row = batch.slice(r, 1);
-                    if reservoir.len() < cap {
-                        reservoir.push(row);
-                    } else {
-                        let j = rng.random_range(0..=seen);
-                        if (j as usize) < cap {
-                            reservoir[j as usize] = row;
-                        }
-                    }
-                    seen += 1;
-                }
-            }
-            if limit > seen {
-                return Err(arrs::error::Error::SampleTooLarge {
-                    requested: limit,
-                    rowcount: seen,
-                });
-            }
-            if !reservoir.is_empty() {
-                let schema = reservoir[0].schema();
-                let combined = arrow::compute::concat_batches(&schema, &reservoir)?;
-                w.write_batch(&combined)?;
-            }
-        }
-        w.finish()?;
-    }
-    Ok(String::from_utf8(out).unwrap())
-}
-
 // -------------------- tests --------------------
 
 #[test]
@@ -984,58 +860,97 @@ fn take_with_where_is_rejected() {
     });
 }
 
-#[test]
-fn tail_where_returns_last_matching_rows() {
-    // Matching rows are ids [1, 3, 5] (odd). The last two matching are [3, 5];
-    // note this differs from "last two rows then filter" (which would be [5]).
-    runtime().block_on(async {
-        let tmp = tempdir();
-        let p = write_simple(&tmp, "s").await;
-        let out = collect_tail_where(&p, 2, "id % 2 = 1").await.unwrap();
-        assert_eq!(ids(&out), vec![3, 5]);
-    });
+// The streaming filtered `tail` and `sample` algorithms themselves are unit
+// tested against the real production functions (with a multi-fragment fixture)
+// in `src/commands/tail.rs` and `src/commands/sample.rs`.
+
+// -------------------- stdout hygiene on error paths --------------------
+//
+// These drive the real binary and assert nothing reaches stdout when a command
+// errors — in CSV the header row is emitted by `writer.start()`, so an empty
+// stdout proves `start()` was never reached. Regression guard for the header
+// leaking before a failed `count_rows` / predicate parse.
+
+fn run_cli(args: &[&str], path: &Path) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_arrs"))
+        .args(args)
+        .arg(path)
+        .output()
+        .expect("spawn arrs binary")
+}
+
+fn assert_clean_failure(out: &std::process::Output, stderr_needle: &str) {
+    assert!(!out.status.success(), "command unexpectedly succeeded");
+    assert!(
+        out.stdout.is_empty(),
+        "stdout should be empty on error, got: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(stderr_needle),
+        "stderr missing {stderr_needle:?}, got: {stderr}"
+    );
 }
 
 #[test]
-fn tail_where_limit_exceeds_matches_returns_all_matching() {
-    runtime().block_on(async {
-        let tmp = tempdir();
-        let p = write_simple(&tmp, "s").await;
-        let out = collect_tail_where(&p, 100, "id >= 4").await.unwrap();
-        assert_eq!(ids(&out), vec![4, 5]);
-    });
+fn head_where_invalid_predicate_writes_nothing_to_stdout() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &["head", "--format", "csv", "--where", "not_a_column > 1"],
+        &p,
+    );
+    assert_clean_failure(&out, "invalid --where predicate");
 }
 
 #[test]
-fn sample_where_samples_only_matching_rows() {
-    runtime().block_on(async {
-        let tmp = tempdir();
-        let p = write_simple(&tmp, "s").await;
-        // Matching rows are ids [2, 3, 4, 5]; a size-2 sample must draw from them.
-        let a = collect_sample_where(&p, 2, 7, "id >= 2").await.unwrap();
-        let b = collect_sample_where(&p, 2, 7, "id >= 2").await.unwrap();
-        assert_eq!(a, b, "same seed must be reproducible");
-        let sampled = ids(&a);
-        assert_eq!(sampled.len(), 2);
-        for id in sampled {
-            assert!((2..=5).contains(&id), "sampled id {id} not in matching set");
-        }
-    });
+fn tail_where_invalid_predicate_writes_nothing_to_stdout() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &["tail", "--format", "csv", "--where", "not_a_column > 1"],
+        &p,
+    );
+    assert_clean_failure(&out, "invalid --where predicate");
 }
 
 #[test]
-fn sample_where_larger_than_match_count_errors() {
-    runtime().block_on(async {
-        let tmp = tempdir();
-        let p = write_simple(&tmp, "s").await;
-        // Only one row matches, so a sample of 3 is impossible.
-        let err = collect_sample_where(&p, 3, 1, "id = 1").await.unwrap_err();
-        assert!(matches!(
-            err,
-            arrs::error::Error::SampleTooLarge {
-                requested: 3,
-                rowcount: 1
-            }
-        ));
-    });
+fn cat_where_invalid_predicate_writes_nothing_to_stdout() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &["cat", "--format", "csv", "--where", "not_a_column > 1"],
+        &p,
+    );
+    assert_clean_failure(&out, "invalid --where predicate");
+}
+
+#[test]
+fn sample_where_invalid_predicate_writes_nothing_to_stdout() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &[
+            "sample",
+            "-n",
+            "2",
+            "--format",
+            "csv",
+            "--where",
+            "not_a_column > 1",
+        ],
+        &p,
+    );
+    assert_clean_failure(&out, "invalid --where predicate");
+}
+
+#[test]
+fn sample_oversize_writes_nothing_to_stdout() {
+    // Regression: on main this printed nothing; the header must not leak before
+    // the `limit > rowcount` check. The fixture has 5 rows.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(&["sample", "-n", "100", "--format", "csv"], &p);
+    assert_clean_failure(&out, "larger than");
 }

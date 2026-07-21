@@ -9,7 +9,6 @@ use crate::dataset::{self, ScanOptions};
 use crate::error::Error;
 use crate::projection;
 
-#[allow(clippy::too_many_arguments)]
 pub async fn run(
     inputs: &[PathBuf],
     format: Format,
@@ -43,18 +42,22 @@ pub async fn run(
         }
     }
 
-    let mut writer = make_stdout_writer(format, binary_format);
-    writer.start(&projected_schema)?;
-
     let options = ScanOptions {
         projection: projection.as_deref(),
         filter,
     };
+    // Open every scan first: the adapter validates the predicate eagerly, so a
+    // bad `--where` errors here, before we emit the output header to stdout.
+    let mut streams = Vec::with_capacity(opened.len());
     for ds in &opened {
-        let mut stream = ds.scan(&options).await?;
+        streams.push(ds.scan(&options).await?);
+    }
+
+    let mut writer = make_stdout_writer(format, binary_format);
+    writer.start(&projected_schema)?;
+    for mut stream in streams {
         while let Some(batch) = stream.next().await {
-            let batch = batch?;
-            writer.write_batch(&batch)?;
+            writer.write_batch(&batch?)?;
         }
     }
     writer.finish()?;

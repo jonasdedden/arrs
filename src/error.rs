@@ -38,7 +38,7 @@ pub enum Error {
     #[error("range {start}:{end} is empty (start > end)")]
     EmptyRange { start: i64, end: i64 },
 
-    #[error("sample size {requested} is larger than dataset row count {rowcount}")]
+    #[error("sample size {requested} is larger than the available row count {rowcount}")]
     SampleTooLarge { requested: u64, rowcount: u64 },
 
     #[error("invalid --where predicate: {0}")]

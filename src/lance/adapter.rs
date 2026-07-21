@@ -57,14 +57,49 @@ impl LanceDataset {
     /// filtered `count_rows` the same clear error a `scan` would produce.
     fn validate_predicate(&self, predicate: &str) -> Result<()> {
         let mut scanner = self.inner.scan();
+        // `filter()` only stores the SQL string today, but map it to
+        // `InvalidPredicate` too so a future eager-parsing Lance keeps the
+        // context. `get_expr_filter()` forces the parse against the schema.
         scanner
             .filter(predicate)
-            .map_err(|e| Error::Lance(Box::new(e)))?;
+            .map_err(|e| Error::InvalidPredicate(predicate_error_message(&e)))?;
         scanner
             .get_expr_filter()
-            .map_err(|e| Error::InvalidPredicate(e.to_string()))?;
+            .map_err(|e| Error::InvalidPredicate(predicate_error_message(&e)))?;
         Ok(())
     }
+}
+
+/// Turn a Lance/DataFusion predicate-parse error into a concise message.
+///
+/// These errors bake a source location such as
+/// `, /home/user/.cargo/registry/.../scanner.rs:422:33` into their `Display`;
+/// strip that noise so the user sees only what is wrong with their SQL.
+fn predicate_error_message<E: std::error::Error>(err: &E) -> String {
+    strip_source_locations(&err.to_string())
+}
+
+fn strip_source_locations(msg: &str) -> String {
+    let mut s = msg.trim_end();
+    // Peel off one or more trailing ", <path>.rs:<line>:<col>" segments.
+    while let Some(idx) = s.rfind(", ") {
+        if looks_like_source_location(s[idx + 2..].trim()) {
+            s = s[..idx].trim_end();
+        } else {
+            break;
+        }
+    }
+    s.to_string()
+}
+
+fn looks_like_source_location(tail: &str) -> bool {
+    // e.g. "/home/user/.cargo/registry/.../scanner.rs:422:33"
+    tail.contains(".rs:")
+        && tail.rsplit(':').take(2).filter(|s| !s.is_empty()).count() == 2
+        && tail
+            .rsplit(':')
+            .take(2)
+            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))
 }
 
 async fn apply_checkout(mut ds: InnerLance, lance: Option<&LanceArgs>) -> Result<InnerLance> {
@@ -158,15 +193,15 @@ impl Dataset for LanceDataset {
                 .map_err(|e| Error::Lance(Box::new(e)))?;
         }
         if let Some(pred) = options.filter {
-            // `filter()` only stores the SQL string; force an eager parse
-            // against the schema so an invalid predicate is reported here with
+            // `filter()` only stores the SQL string; force an eager parse via
+            // `get_expr_filter()` so an invalid predicate is reported here with
             // context instead of failing deep inside the stream.
             scanner
                 .filter(pred)
-                .map_err(|e| Error::Lance(Box::new(e)))?;
+                .map_err(|e| Error::InvalidPredicate(predicate_error_message(&e)))?;
             scanner
                 .get_expr_filter()
-                .map_err(|e| Error::InvalidPredicate(e.to_string()))?;
+                .map_err(|e| Error::InvalidPredicate(predicate_error_message(&e)))?;
         }
         let stream = scanner
             .try_into_stream()

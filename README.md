@@ -89,8 +89,9 @@ arrs schema --type physical dataset.lance # lance-native (field ids, encoding…
 ### Filtering rows with `--where`
 
 `--where` takes a SQL-style predicate (parsed by the backend — DataFusion SQL
-for Lance) and keeps only the rows that match. It is available on every
-row-producing command plus `rowcount`:
+for Lance) and keeps only the rows that match. It is available on `cat`,
+`head`, `tail`, `sample`, and `rowcount` (but not `take`, which addresses rows
+positionally — see below):
 
 | Command    | With `--where`                                                   |
 |------------|------------------------------------------------------------------|
