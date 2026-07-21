@@ -98,6 +98,41 @@ pub trait LanceCapabilities: Send + Sync {
     /// via concurrent object-store lookups. Pass `false` to skip that entirely
     /// (leaving `FragmentInfo::size` as `None`) for very remote or huge datasets.
     async fn list_fragments(&self, with_size: bool) -> Result<Vec<FragmentInfo>>;
+
+    /// Nearest-neighbor vector search over a `FixedSizeList`-of-float column.
+    ///
+    /// Uses an ANN index when one exists on the column and falls back to flat
+    /// (brute-force) KNN otherwise; `VectorSearchResult::used_index` reports
+    /// which path was taken. The query vector is validated against the column
+    /// width and cast to the column's element type by the adapter.
+    async fn search(&self, params: &VectorSearchParams<'_>) -> Result<VectorSearchResult>;
+}
+
+/// Parameters for an `arrs search` nearest-neighbor query.
+#[derive(Debug)]
+pub struct VectorSearchParams<'a> {
+    /// Vector column to search (a `FixedSizeList` of f16/f32/f64).
+    pub column: &'a str,
+    /// Query vector. Parsed from JSON and carried as f32 (Lance casts it to the
+    /// column's element type); validated against the column width.
+    pub vector: &'a [f32],
+    /// Number of nearest neighbors to return.
+    pub k: usize,
+    /// IVF partitions to probe (`None` → Lance default). No effect without an index.
+    pub nprobes: Option<usize>,
+    /// Refine factor for re-ranking (`None` → no refinement).
+    pub refine_factor: Option<u32>,
+    /// Output column projection; `_distance` is always appended regardless.
+    pub projection: Option<&'a [String]>,
+}
+
+/// Outcome of a vector search: the output schema (including the trailing
+/// `_distance` column), the row stream, and whether an ANN index was used.
+pub struct VectorSearchResult {
+    pub schema: SchemaRef,
+    pub stream: BatchStream,
+    /// `false` when no ANN index covers the column and flat KNN was used.
+    pub used_index: bool,
 }
 
 /// One row in `arrs versions` output.

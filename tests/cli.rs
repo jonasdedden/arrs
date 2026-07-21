@@ -960,3 +960,71 @@ fn sample_oversize_writes_nothing_to_stdout() {
     let out = run_cli(&["sample", "-n", "100", "--format", "csv"], &p);
     assert_clean_failure(&out, "larger than");
 }
+
+// --------------------------- search arg parsing -----------------------------
+
+/// `-k 0` must be rejected at the clap layer with a clean message rather than
+/// dying deep inside Lance with a registry-path error.
+#[test]
+fn search_rejects_k_zero() {
+    let res = <Cli as clap::Parser>::try_parse_from([
+        "arrs",
+        "search",
+        "--column",
+        "embedding",
+        "--vector",
+        "[0.1]",
+        "-k",
+        "0",
+        "ds.lance",
+    ]);
+    assert!(res.is_err(), "expected -k 0 to be rejected");
+}
+
+/// A positive `-k` parses fine.
+#[test]
+fn search_accepts_positive_k() {
+    let res = <Cli as clap::Parser>::try_parse_from([
+        "arrs",
+        "search",
+        "--column",
+        "embedding",
+        "--vector",
+        "[0.1]",
+        "-k",
+        "5",
+        "ds.lance",
+    ]);
+    assert!(res.is_ok(), "expected -k 5 to parse: {res:?}");
+}
+
+/// `--nprobes 0` silently returns zero rows on indexed datasets, so reject it
+/// at the clap layer.
+#[test]
+fn search_rejects_nprobes_zero() {
+    let res = <Cli as clap::Parser>::try_parse_from([
+        "arrs",
+        "search",
+        "--column",
+        "embedding",
+        "--vector",
+        "[0.1]",
+        "--nprobes",
+        "0",
+        "ds.lance",
+    ]);
+    assert!(res.is_err(), "expected --nprobes 0 to be rejected");
+}
+
+/// Supplying neither `--vector` nor `--vector-file` is a parse error.
+#[test]
+fn search_requires_a_query_vector() {
+    let res = <Cli as clap::Parser>::try_parse_from([
+        "arrs",
+        "search",
+        "--column",
+        "embedding",
+        "ds.lance",
+    ]);
+    assert!(res.is_err(), "expected missing query vector to be rejected");
+}

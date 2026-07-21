@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   support (#15).
 - Support remote object-store URIs (`s3://`, `gs://`, `az://`, `file://`) as
   dataset inputs for every command, using ambient environment credentials (#7).
+- `search` command: Lance nearest-neighbor (ANN / flat KNN) vector search with
+  `--column`, `--vector`/`--vector-file`, `-k`, `--nprobes`, `--refine-factor`,
+  an appended `_distance` column, and projection support (#16).
 
 ### Changed
 

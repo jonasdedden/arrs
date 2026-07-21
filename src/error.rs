@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -46,6 +48,28 @@ pub enum Error {
         "--where cannot be combined with 'take --indices'; indices are positional. Filter rows with another command (e.g. 'head --where ...') instead"
     )]
     TakeWhereConflict,
+
+    #[error(
+        "column '{column}' is not a vector column (found {data_type}, expected a fixed-size list of f16/f32/f64)"
+    )]
+    NotVectorColumn { column: String, data_type: String },
+
+    #[error("query has {query} dims, column {column} has {column_dims}")]
+    VectorDimMismatch {
+        query: usize,
+        column: String,
+        column_dims: usize,
+    },
+
+    #[error("could not parse query vector as a JSON array of numbers: {0}")]
+    VectorParse(String),
+
+    #[error("failed to read query vector file {path}")]
+    VectorFileRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("failed to open lance dataset at {path}")]
     LanceOpen {

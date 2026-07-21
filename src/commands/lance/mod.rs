@@ -6,5 +6,6 @@
 pub mod branches;
 pub mod fragments;
 pub mod indices;
+pub mod search;
 pub mod tags;
 pub mod versions;

@@ -4,19 +4,27 @@
 
 mod common;
 
+use std::io::Cursor;
 use std::sync::Arc;
 
-use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
+use arrow_array::{Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use futures::StreamExt as _;
 use lance::Dataset as LanceInner;
+use lance::index::vector::VectorIndexParams;
 use lance_index::DatasetIndexExt as _;
 use lance_index::IndexType;
 use lance_index::scalar::ScalarIndexParams;
+use lance_linalg::distance::DistanceType;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
-use arrs::cli::LanceArgs;
-use arrs::dataset;
+use arrs::cli::{BinaryFormat, Format, LanceArgs};
+use arrs::dataset::{self, VectorSearchParams};
+use arrs::error::Error;
+use arrs::output::make_writer;
+use arrs::output::table::TableStyle;
 
 use common::tempdir;
 
@@ -89,6 +97,326 @@ async fn build_fixture_with_index(tmp: &TempDir, name: &str) -> String {
     .await
     .unwrap();
     uri
+}
+
+// ----------------------------- vector search --------------------------------
+
+/// Rows for the vector-search fixture: distinct 4-d corners of a cube so a
+/// nearest-neighbor query has an unambiguous, deterministic ordering.
+const VECTOR_DIM: i32 = 4;
+const VECTOR_ROWS: [(i32, [f32; 4]); 8] = [
+    (0, [0.0, 0.0, 0.0, 0.0]),
+    (1, [1.0, 0.0, 0.0, 0.0]),
+    (2, [0.0, 1.0, 0.0, 0.0]),
+    (3, [1.0, 1.0, 0.0, 0.0]),
+    (4, [0.0, 0.0, 1.0, 0.0]),
+    (5, [1.0, 0.0, 1.0, 0.0]),
+    (6, [0.0, 1.0, 1.0, 0.0]),
+    (7, [1.0, 1.0, 1.0, 0.0]),
+];
+
+fn vector_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                VECTOR_DIM,
+            ),
+            false,
+        ),
+    ]))
+}
+
+fn vector_batch() -> RecordBatch {
+    let ids = Int32Array::from(VECTOR_ROWS.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+    let mut builder = FixedSizeListBuilder::new(Float32Builder::new(), VECTOR_DIM);
+    for (_, v) in VECTOR_ROWS.iter() {
+        builder.values().append_slice(v);
+        builder.append(true);
+    }
+    RecordBatch::try_new(
+        vector_schema(),
+        vec![Arc::new(ids), Arc::new(builder.finish())],
+    )
+    .unwrap()
+}
+
+/// Build a dataset with an `id` column and a `FixedSizeList<Float32; 4>`
+/// `embedding` column. When `with_index`, adds an IVF_FLAT index on the vector
+/// column (single partition → exact, deterministic results at fixture scale;
+/// IVF_PQ needs far more rows than is practical to train reproducibly here).
+async fn build_vector_fixture(tmp: &TempDir, name: &str, with_index: bool) -> String {
+    let path = tmp.path().join(name);
+    let uri = path.to_string_lossy().into_owned();
+    let iter = RecordBatchIterator::new(vec![Ok(vector_batch())], vector_schema());
+    let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+    if with_index {
+        let params = VectorIndexParams::ivf_flat(1, DistanceType::L2);
+        ds.create_index(
+            &["embedding"],
+            IndexType::Vector,
+            Some("idx_embedding".to_string()),
+            &params,
+            false,
+        )
+        .await
+        .unwrap();
+    }
+    uri
+}
+
+/// Pull every row out of a search result as `(id, _distance)` pairs, in the
+/// order the stream yields them.
+async fn collect_id_distance(result: arrs::dataset::VectorSearchResult) -> Vec<(i32, f32)> {
+    use arrow_array::Float32Array;
+    let mut stream = result.stream;
+    let mut out = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let batch = batch.unwrap();
+        let ids = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let dist = batch
+            .column_by_name("_distance")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            out.push((ids.value(i), dist.value(i)));
+        }
+    }
+    out
+}
+
+#[test]
+fn search_with_index_returns_ordered_neighbors() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_vector_fixture(&tmp, "vec", true).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let query = vec![0.9_f32, 0.8, 0.1, 0.0];
+        let params = VectorSearchParams {
+            column: "embedding",
+            vector: &query,
+            k: 2,
+            nprobes: Some(1),
+            refine_factor: None,
+            projection: None,
+        };
+        let result = lance.search(&params).await.unwrap();
+        assert!(result.used_index, "IVF_FLAT index should be used");
+        assert!(result.schema.field_with_name("_distance").is_ok());
+
+        let rows = collect_id_distance(result).await;
+        assert_eq!(rows.len(), 2);
+        // Query is closest to [1,1,0,0] (id 3), then [1,0,0,0] (id 1).
+        assert_eq!(rows[0].0, 3);
+        assert_eq!(rows[1].0, 1);
+        assert!(rows[0].1 <= rows[1].1, "distances must be ascending");
+    });
+}
+
+#[test]
+fn search_without_index_falls_back_to_flat_knn() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_vector_fixture(&tmp, "vec", false).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let query = vec![0.9_f32, 0.8, 0.1, 0.0];
+        let params = VectorSearchParams {
+            column: "embedding",
+            vector: &query,
+            k: 2,
+            nprobes: None,
+            refine_factor: None,
+            projection: None,
+        };
+        let result = lance.search(&params).await.unwrap();
+        assert!(!result.used_index, "no index → flat KNN");
+
+        let rows = collect_id_distance(result).await;
+        // Same deterministic ordering as the indexed path.
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![3, 1]
+        );
+    });
+}
+
+#[test]
+fn search_dimension_mismatch_is_precise() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_vector_fixture(&tmp, "vec", false).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let query = vec![0.1_f32, 0.2]; // 2 dims vs column's 4
+        let params = VectorSearchParams {
+            column: "embedding",
+            vector: &query,
+            k: 1,
+            nprobes: None,
+            refine_factor: None,
+            projection: None,
+        };
+        let err = match lance.search(&params).await {
+            Ok(_) => panic!("expected VectorDimMismatch error"),
+            Err(e) => e,
+        };
+        match err {
+            Error::VectorDimMismatch {
+                query,
+                column,
+                column_dims,
+            } => {
+                assert_eq!(query, 2);
+                assert_eq!(column, "embedding");
+                assert_eq!(column_dims, 4);
+            }
+            other => panic!("expected VectorDimMismatch, got {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn search_on_non_vector_column_errors() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_vector_fixture(&tmp, "vec", false).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let query = vec![0.1_f32, 0.2, 0.3, 0.4];
+        let params = VectorSearchParams {
+            column: "id", // Int32, not a vector column
+            vector: &query,
+            k: 1,
+            nprobes: None,
+            refine_factor: None,
+            projection: None,
+        };
+        let err = match lance.search(&params).await {
+            Ok(_) => panic!("expected NotVectorColumn error"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, Error::NotVectorColumn { .. }), "got {err:?}");
+    });
+}
+
+#[test]
+fn search_projection_composes_with_distance() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_vector_fixture(&tmp, "vec", true).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let query = vec![0.9_f32, 0.8, 0.1, 0.0];
+        let projection = vec!["id".to_string()];
+        let params = VectorSearchParams {
+            column: "embedding",
+            vector: &query,
+            k: 2,
+            nprobes: Some(1),
+            refine_factor: None,
+            projection: Some(&projection),
+        };
+        let result = lance.search(&params).await.unwrap();
+        // Projected to `id` only, but `_distance` is always appended; the
+        // unprojected `embedding` column must be absent.
+        assert!(result.schema.field_with_name("id").is_ok());
+        assert!(result.schema.field_with_name("_distance").is_ok());
+        assert!(result.schema.field_with_name("embedding").is_err());
+    });
+}
+
+#[test]
+fn search_projection_may_name_distance_explicitly() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_vector_fixture(&tmp, "vec", true).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let query = vec![0.9_f32, 0.8, 0.1, 0.0];
+        // The adapter force-includes `_distance`; naming it explicitly must not
+        // produce a duplicate column.
+        let projection = vec!["id".to_string(), "_distance".to_string()];
+        let params = VectorSearchParams {
+            column: "embedding",
+            vector: &query,
+            k: 2,
+            nprobes: Some(1),
+            refine_factor: None,
+            projection: Some(&projection),
+        };
+        let result = lance.search(&params).await.unwrap();
+        let distance_cols = result
+            .schema
+            .fields()
+            .iter()
+            .filter(|f| f.name() == "_distance")
+            .count();
+        assert_eq!(distance_cols, 1, "_distance must appear exactly once");
+        assert!(result.schema.field_with_name("id").is_ok());
+    });
+}
+
+#[test]
+fn search_output_works_in_all_formats() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_vector_fixture(&tmp, "vec", true).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let query = vec![0.9_f32, 0.8, 0.1, 0.0];
+        for format in [Format::Jsonl, Format::Csv, Format::Table] {
+            let projection = vec!["id".to_string()];
+            let params = VectorSearchParams {
+                column: "embedding",
+                vector: &query,
+                k: 2,
+                nprobes: Some(1),
+                refine_factor: None,
+                projection: Some(&projection),
+            };
+            let result = lance.search(&params).await.unwrap();
+            let schema = result.schema.clone();
+            let mut stream = result.stream;
+
+            let mut out: Vec<u8> = Vec::new();
+            {
+                let mut w = make_writer(
+                    format,
+                    BinaryFormat::None,
+                    TableStyle::Plain,
+                    Cursor::new(&mut out),
+                );
+                w.start(&schema).unwrap();
+                while let Some(batch) = stream.next().await {
+                    w.write_batch(&batch.unwrap()).unwrap();
+                }
+                w.finish().unwrap();
+            }
+            let text = String::from_utf8(out).unwrap();
+            assert!(
+                text.contains("_distance"),
+                "format {format:?} output missing _distance column: {text}"
+            );
+        }
+    });
 }
 
 // ----------------------------- adapter-level --------------------------------
