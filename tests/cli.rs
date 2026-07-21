@@ -7,7 +7,8 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arrow_schema::SchemaRef;
+use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use arrs::cli::{BinaryFormat, Cli, Command, FilterArg, Format, LanceArgs};
 use arrs::commands::dispatch;
 use arrs::dataset;
@@ -17,6 +18,11 @@ use arrs::output::make_writer;
 use arrs::output::table::TableStyle;
 use arrs::projection;
 use futures::StreamExt;
+use lance::Dataset as LanceInner;
+use lance::dataset::NewColumnTransform;
+use lance_index::DatasetIndexExt as _;
+use lance_index::IndexType;
+use lance_index::scalar::ScalarIndexParams;
 use tokio::runtime::Runtime;
 
 use common::{tempdir, write_full, write_simple, write_with_binary};
@@ -1522,4 +1528,330 @@ fn freq_rejects_zero_limit() {
         "stdout should be empty: {:?}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+// ------------------------------ diff (issue #19) ----------------------------
+
+fn diff_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Utf8, true),
+    ]))
+}
+
+fn diff_batch(ids: Vec<i32>, vals: Vec<&str>) -> RecordBatch {
+    RecordBatch::try_new(
+        diff_schema(),
+        vec![
+            Arc::new(Int32Array::from(ids)),
+            Arc::new(StringArray::from(vals)),
+        ],
+    )
+    .unwrap()
+}
+
+/// Build a four-version dataset on `main` exercising every diff bucket:
+///   v1 write [1,2]            (fragment 0, 2 rows)
+///   v2 append [3]            (fragment 1, +1 row); tag `v2` → version 2
+///   v3 delete id=1           (tombstone in fragment 0)
+///   v4 add column `doubled`  (schema evolution: appends a file to each fragment)
+/// No index (index builds serialise poorly across parallel test threads — the
+/// index test uses its own fixture).
+fn build_diff_fixture(path: &Path) -> Runtime {
+    let rt = runtime();
+    rt.block_on(async {
+        let uri = path.to_string_lossy().into_owned();
+        let iter = RecordBatchIterator::new(
+            vec![Ok(diff_batch(vec![1, 2], vec!["a", "b"]))],
+            diff_schema(),
+        );
+        let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+
+        let iter =
+            RecordBatchIterator::new(vec![Ok(diff_batch(vec![3], vec!["c"]))], diff_schema());
+        ds.append(iter, None).await.unwrap();
+        ds.tags().create("v2", 2u64).await.unwrap();
+
+        ds.delete("id = 1").await.unwrap();
+
+        ds.add_columns(
+            NewColumnTransform::SqlExpressions(vec![("doubled".to_string(), "id * 2".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    });
+    rt
+}
+
+/// Run `arrs diff <args> <path>` and return the process output.
+fn run_diff(args: &[&str], path: &Path) -> std::process::Output {
+    let mut full = vec!["diff"];
+    full.extend_from_slice(args);
+    run_cli(&full, path)
+}
+
+/// Run a jsonl diff and parse the single JSON record, asserting the exit code.
+fn diff_json(args: &[&str], path: &Path, expect_code: i32) -> serde_json::Value {
+    let mut full: Vec<&str> = args.to_vec();
+    full.extend_from_slice(&["--format", "jsonl"]);
+    let out = run_diff(&full, path);
+    assert_eq!(
+        out.status.code(),
+        Some(expect_code),
+        "exit code mismatch; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "diff jsonl not parseable ({e}); stdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
+
+#[test]
+fn diff_pure_append_reports_added_rows_and_fragment() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    let v = diff_json(&["--from", "1", "--to", "2"], &path, 1);
+    assert_eq!(v["identical"], serde_json::json!(false));
+    assert_eq!(v["rows"]["from"], serde_json::json!(2));
+    assert_eq!(v["rows"]["to"], serde_json::json!(3));
+    assert_eq!(v["rows"]["added"], serde_json::json!(1));
+    assert_eq!(v["rows"]["deleted"], serde_json::json!(0));
+    assert_eq!(v["rows"]["net"], serde_json::json!(1));
+    assert_eq!(v["fragments"]["added"], serde_json::json!([1]));
+    assert_eq!(v["fragments"]["removed"], serde_json::json!([]));
+}
+
+#[test]
+fn diff_delete_reports_deleted_split_not_just_net() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    // v2 (3 live rows) -> v3 (id=1 tombstoned, 2 live rows).
+    let v = diff_json(&["--from", "2", "--to", "3"], &path, 1);
+    assert_eq!(v["rows"]["from"], serde_json::json!(3));
+    assert_eq!(v["rows"]["to"], serde_json::json!(2));
+    assert_eq!(v["rows"]["added"], serde_json::json!(0));
+    assert_eq!(v["rows"]["deleted"], serde_json::json!(1));
+    assert_eq!(v["rows"]["net"], serde_json::json!(-1));
+    // A tombstone rewrites no data file, so it stays out of the fragment buckets.
+    assert_eq!(v["fragments"]["added"], serde_json::json!([]));
+    assert_eq!(v["fragments"]["removed"], serde_json::json!([]));
+    assert_eq!(v["fragments"]["rewritten"], serde_json::json!([]));
+}
+
+#[test]
+fn diff_schema_evolution_reports_added_column_and_rewritten_fragments() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    // v3 -> v4 added the `doubled` column via schema evolution.
+    let v = diff_json(&["--from", "3", "--to", "4"], &path, 1);
+    let added = v["schema"]["added"].as_array().unwrap();
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0]["name"], serde_json::json!("doubled"));
+    assert!(
+        added[0]["type"].as_str().unwrap().starts_with("Int32"),
+        "unexpected type: {}",
+        added[0]["type"]
+    );
+    // Both surviving fragments gained a data file → rewritten, not removed/added.
+    assert_eq!(v["fragments"]["rewritten"], serde_json::json!([0, 1]));
+    assert_eq!(v["fragments"]["added"], serde_json::json!([]));
+    assert_eq!(v["fragments"]["removed"], serde_json::json!([]));
+    // Row count is unchanged by adding a column.
+    assert_eq!(v["rows"]["added"], serde_json::json!(0));
+    assert_eq!(v["rows"]["deleted"], serde_json::json!(0));
+}
+
+#[test]
+fn diff_to_defaults_to_branch_latest_and_lists_version_log() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    // No --to → latest (v4). Version log covers (1, 4].
+    let v = diff_json(&["--from", "1"], &path, 1);
+    assert_eq!(v["to"]["version"], serde_json::json!(4));
+    let versions: Vec<u64> = v["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["version"].as_u64().unwrap())
+        .collect();
+    assert_eq!(versions, vec![2, 3, 4]);
+}
+
+#[test]
+fn diff_selects_endpoints_by_tag() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    let v = diff_json(&["--from-tag", "v2", "--to", "3"], &path, 1);
+    assert_eq!(v["from"]["version"], serde_json::json!(2));
+    assert_eq!(v["from"]["branch"], serde_json::json!("main"));
+    assert_eq!(v["to"]["version"], serde_json::json!(3));
+}
+
+#[test]
+fn diff_identical_versions_exit_zero_jsonl() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    let v = diff_json(&["--from", "4", "--to", "4"], &path, 0);
+    assert_eq!(v["identical"], serde_json::json!(true));
+    assert_eq!(v["rows"]["net"], serde_json::json!(0));
+}
+
+#[test]
+fn diff_identical_versions_human_says_no_differences() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    let out = run_diff(&["--from", "4", "--to", "4"], &path);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No differences."),
+        "expected 'No differences.' in:\n{stdout}"
+    );
+}
+
+#[test]
+fn diff_human_summary_reports_rows_and_schema() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    let out = run_diff(&["--from", "1", "--to", "4"], &path);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Rows:"), "missing Rows line:\n{stdout}");
+    assert!(
+        stdout.contains("+ doubled"),
+        "missing added column:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Versions in range"),
+        "missing version log:\n{stdout}"
+    );
+}
+
+#[test]
+fn diff_missing_dataset_errors_with_exit_two() {
+    let tmp = tempdir();
+    let missing = tmp.path().join("nope.lance");
+    let out = run_diff(&["--from", "1", "--to", "2"], &missing);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "stdout should be empty on error");
+}
+
+#[test]
+fn diff_unsupported_format_errors_with_exit_two() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    build_diff_fixture(&path);
+
+    let out = run_diff(&["--from", "1", "--to", "2", "--format", "csv"], &path);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("diff supports only"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn diff_index_creation_is_reported() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    let uri = path.to_string_lossy().into_owned();
+    runtime().block_on(async {
+        let iter = RecordBatchIterator::new(
+            vec![Ok(diff_batch(vec![1, 2], vec!["a", "b"]))],
+            diff_schema(),
+        );
+        let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+        // v2: create a scalar index on `id`.
+        ds.create_index(
+            &["id"],
+            IndexType::BTree,
+            Some("idx_id".to_string()),
+            &ScalarIndexParams::default(),
+            false,
+        )
+        .await
+        .unwrap();
+    });
+
+    let v = diff_json(&["--from", "1", "--to", "2"], &path, 1);
+    let created = v["indices"]["created"].as_array().unwrap();
+    assert_eq!(created, &vec![serde_json::json!("idx_id")]);
+    assert_eq!(v["indices"]["dropped"], serde_json::json!([]));
+}
+
+#[test]
+fn diff_cross_branch_endpoints_error_with_exit_two() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    let uri = path.to_string_lossy().into_owned();
+    runtime().block_on(async {
+        let iter = RecordBatchIterator::new(
+            vec![Ok(diff_batch(vec![1, 2], vec!["a", "b"]))],
+            diff_schema(),
+        );
+        let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+        let iter =
+            RecordBatchIterator::new(vec![Ok(diff_batch(vec![3], vec!["c"]))], diff_schema());
+        ds.append(iter, None).await.unwrap();
+        // Tag on main, and a branch `dev` off v2 with its own tag.
+        ds.tags().create("main-tag", 2u64).await.unwrap();
+        let dev = ds.create_branch("dev", 2u64, None).await.unwrap();
+        dev.tags().create("dev-tag", ("dev", 2u64)).await.unwrap();
+    });
+
+    // from-tag on main, to-tag on dev → cross-branch comparison is rejected.
+    let out = run_diff(&["--from-tag", "main-tag", "--to-tag", "dev-tag"], &path);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("different branches"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn diff_tag_on_wrong_branch_errors_with_exit_two() {
+    let tmp = tempdir();
+    let path = tmp.path().join("ds");
+    let uri = path.to_string_lossy().into_owned();
+    runtime().block_on(async {
+        let iter = RecordBatchIterator::new(
+            vec![Ok(diff_batch(vec![1, 2], vec!["a", "b"]))],
+            diff_schema(),
+        );
+        let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+        let iter =
+            RecordBatchIterator::new(vec![Ok(diff_batch(vec![3], vec!["c"]))], diff_schema());
+        ds.append(iter, None).await.unwrap();
+        ds.tags().create("main-tag", 2u64).await.unwrap();
+        ds.create_branch("dev", 2u64, None).await.unwrap();
+    });
+
+    // `main-tag` lives on main; asking for it under --branch dev must error.
+    let out = run_diff(
+        &["--from-tag", "main-tag", "--to", "2", "--branch", "dev"],
+        &path,
+    );
+    assert_eq!(out.status.code(), Some(2));
 }

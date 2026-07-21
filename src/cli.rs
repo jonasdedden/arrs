@@ -285,6 +285,34 @@ pub enum Command {
         lance: LanceArgs,
     },
 
+    /// (Lance only) Diff two versions of one dataset: row, schema, fragment,
+    /// index and version-log deltas.
+    ///
+    /// Exit codes follow `diff(1)`: `0` when the two versions are identical,
+    /// `1` when they differ, `2` on error. Human-readable summary by default;
+    /// pass `--format jsonl` for a single machine-readable JSON record.
+    #[command(group(ArgGroup::new("from_ref").required(true).args(["from", "from_tag"])))]
+    Diff {
+        input: String,
+        /// Left-hand ("from") version number.
+        #[arg(long, conflicts_with = "from_tag")]
+        from: Option<u64>,
+        /// Left-hand ("from") tag; resolves to its `(branch, version)`.
+        #[arg(long = "from-tag", conflicts_with = "from")]
+        from_tag: Option<String>,
+        /// Right-hand ("to") version number. Defaults to the latest version of
+        /// the same branch as the "from" endpoint.
+        #[arg(long, conflicts_with = "to_tag")]
+        to: Option<u64>,
+        /// Right-hand ("to") tag; resolves to its `(branch, version)`.
+        #[arg(long = "to-tag", conflicts_with = "to")]
+        to_tag: Option<String>,
+        /// Scope both endpoints to this branch (default: main). A tag on a
+        /// different branch is rejected.
+        #[arg(long)]
+        branch: Option<String>,
+    },
+
     /// (Lance only) Nearest-neighbor vector search; appends a `_distance` column.
     ///
     /// Uses an ANN index on the column when present, otherwise falls back to

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `diff` command (Lance only): compare two versions of one dataset and report
+  row deltas (added/deleted split from fragment metadata, not just net), schema
+  changes (columns added/removed/retyped), fragment changes (added/removed/
+  rewritten), index changes (created/dropped), and the version log of the
+  `(from, to]` range. Endpoints select by `--from`/`--to` version or
+  `--from-tag`/`--to-tag`, scoped with `--branch`; `--to` defaults to the branch
+  latest. Human-readable summary by default, `--format jsonl` for a single
+  machine-readable record. Exit codes follow `diff(1)`: `0` identical, `1`
+  different, `2` error. (#19)
 - `--where <predicate>` SQL-style predicate filtering for `cat`, `head`, `tail`,
   `rowcount`, and `sample`. The filter is applied before row selection, and
   filtered `rowcount` uses the backend's native filtered count (pushed into
@@ -70,6 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Error exit code is now `2` (was `1`) for every command, so that exit code `1`
+  is reserved for `diff` reporting that two versions differ (mirroring
+  `diff(1)`). `0` still means success. (#19)
+- `commands::dispatch` now returns `Result<commands::Outcome>` instead of
+  `Result<()>`, carrying whether `diff` found the versions identical or
+  different so `main` can pick the exit code. (#19)
 - `Dataset::scan` now takes a `ScanOptions` struct (projection + filter) instead
   of a positional projection argument; `Dataset::count_rows` takes an optional
   filter. (#6)

@@ -11,10 +11,21 @@ mod tail;
 mod take;
 
 use crate::Result;
-use crate::cli::{Cli, Command, Format};
+use crate::cli::{BinaryFormat, Cli, Command, Format};
 use crate::error::Error;
 
-pub async fn dispatch(cli: Cli) -> Result<()> {
+/// What a successfully-run command signals to the process exit code.
+///
+/// Every command yields `Success` except `diff`, which yields `Different` when
+/// the two versions it compared are not identical. `main` maps `Success` → 0,
+/// `Different` → 1, and any `Err` → 2 (see `diff(1)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Success,
+    Different,
+}
+
+pub async fn dispatch(cli: Cli) -> Result<Outcome> {
     let columns = cli.columns.as_deref();
     let exclude = cli.exclude_columns.as_deref();
     let binary_format = cli.binary_format;
@@ -23,8 +34,41 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     {
         return Err(Error::FormatNotApplicable { command: name });
     }
-    let format = resolve_format(cli.format, &cli.command);
-    match cli.command {
+    let explicit_format = cli.format;
+    // `diff` owns its own format semantics (human summary vs `--format jsonl`)
+    // and its own exit-code outcome, so it is branched out before the
+    // row-format machinery the other commands share.
+    if let Command::Diff {
+        input,
+        from,
+        from_tag,
+        to,
+        to_tag,
+        branch,
+    } = cli.command
+    {
+        let selectors = lance::diff::DiffSelectors {
+            branch,
+            from_version: from,
+            from_tag,
+            to_version: to,
+            to_tag,
+        };
+        return lance::diff::run(&input, selectors, explicit_format).await;
+    }
+    let format = resolve_format(explicit_format, &cli.command);
+    run_command(cli.command, format, binary_format, columns, exclude).await?;
+    Ok(Outcome::Success)
+}
+
+async fn run_command(
+    command: Command,
+    format: Format,
+    binary_format: BinaryFormat,
+    columns: Option<&[String]>,
+    exclude: Option<&[String]>,
+) -> Result<()> {
+    match command {
         Command::Cat {
             inputs,
             filter,
@@ -228,12 +272,15 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             no_size,
             lance: lance_args,
         } => lance::stat::run(&input, &lance_args, no_size, format, binary_format).await,
+        // `diff` is intercepted in `dispatch` (distinct format + exit-code
+        // handling) and never reaches this shared row-format path.
+        Command::Diff { .. } => unreachable!("diff is dispatched separately"),
     }
 }
 
 /// Apply the per-command default when `--format` was not given on the CLI.
 /// Summary/metadata commands (freq/versions/branches/tags/indices/index-stats/
-/// fragments/stats) default to
+/// fragments/stats/stat) default to
 /// `Table`; everything else defaults to `Jsonl`.
 fn resolve_format(explicit: Option<Format>, cmd: &Command) -> Format {
     if let Some(f) = explicit {
