@@ -215,14 +215,31 @@ $ arrs freq --column label dataset.lance
 ```
 
 - Nulls are counted and shown as an explicit `NULL` row.
-- `-n/--limit N` keeps only the top `N` rows; everything else is folded into a
-  trailing `<other>` row so the percentages still add up.
+- `-n/--limit N` (`N` ≥ 1) keeps only the top `N` rows; everything else is folded
+  into a trailing `<other>` row so the percentages still add up.
 - `--sort count` (default) orders by frequency, breaking ties by value; `--sort
-  value` orders by value. `NULL` always sorts last.
+  value` orders by value. Ordering is by the value's real type — numbers sort
+  numerically (not as strings), temporals chronologically — with `NULL` and
+  `NaN` always last. Distinct values that compare equal (e.g. `-0.0` and `0.0`)
+  fall back to a string tie-break so the output stays deterministic.
 - Only primitive columns are supported (strings, numbers, bools, dates,
-  timestamps); nested and binary columns are rejected with a clear error.
+  timestamps, decimals); nested and binary columns are rejected with a clear
+  error.
 - Works with `--where` (counts are computed over the matching subset) and with
   `--format jsonl|csv` for machine-readable output.
+
+A note on how values are keyed: each value is identified by its CSV rendering
+(the same text `cat --format csv` would print). Two consequences worth knowing:
+
+- Floating-point `-0.0` and `0.0` render differently (`-0` vs `0`) and so are
+  two distinct rows, while every `NaN` bit pattern renders as `NaN` and collapses
+  into a single row.
+- A literal string value of `"NULL"` (or `"<other>"`) renders identically to the
+  real null row (or the truncation remainder). The counts are always tracked
+  separately and correctly — only the printed label collides — but the rendered
+  table cannot tell them apart. This holds in every format (`jsonl` also prints
+  the label as the string `"NULL"`, not JSON `null`), so if you need to
+  distinguish them unambiguously, filter the literal out with `--where` first.
 
 ```sh
 # Top 20 values only, remainder summarized as `<other>`.

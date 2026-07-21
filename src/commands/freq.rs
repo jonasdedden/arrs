@@ -53,7 +53,16 @@ pub async fn run(
     // Compute the full table before touching stdout: validation, an invalid
     // `--where`, or the cardinality guard must fail before the writer emits a
     // header (mirrors the other buffered commands' stdout hygiene).
-    let batch = compute(ds.as_ref(), column, limit, sort, filter, binary_format).await?;
+    let batch = compute(
+        ds.as_ref(),
+        column,
+        limit,
+        sort,
+        filter,
+        binary_format,
+        MAX_DISTINCT,
+    )
+    .await?;
 
     let mut writer = make_stdout_writer(format, binary_format);
     writer.start(&batch.schema())?;
@@ -65,6 +74,7 @@ pub async fn run(
 /// Open-free core: validate the column, accumulate counts over the (optionally
 /// filtered) scan, and materialise the `value / count / percent` batch. Split
 /// out from `run` so tests can exercise it and render it in every format.
+#[allow(clippy::too_many_arguments)]
 async fn compute(
     ds: &dyn Dataset,
     column: &str,
@@ -72,6 +82,7 @@ async fn compute(
     sort: FreqSort,
     filter: Option<&str>,
     binary_format: BinaryFormat,
+    max_distinct: usize,
 ) -> Result<RecordBatch> {
     let schema = ds.arrow_schema();
     let field = schema
@@ -86,9 +97,12 @@ async fn compute(
                 .join(", "),
         })?;
     validate_freq_type(column, field.data_type())?;
+    // The scan knows the column type, so ordering can key on the value's real
+    // (numeric / lexical) order rather than its rendered string.
+    let ordering = OrderMode::of(field.data_type());
 
-    let counts = accumulate(ds, column, filter, binary_format).await?;
-    build_batch(counts, sort, limit)
+    let counts = accumulate(ds, column, filter, binary_format, max_distinct).await?;
+    build_batch(counts, sort, limit, ordering)
 }
 
 /// Accumulated value counts for one column.
@@ -107,6 +121,7 @@ async fn accumulate(
     column: &str,
     filter: Option<&str>,
     binary_format: BinaryFormat,
+    max_distinct: usize,
 ) -> Result<Counts> {
     let projection = [column.to_string()];
     let options = ScanOptions {
@@ -129,10 +144,10 @@ async fn accumulate(
                 Some(key) => match present.get_mut(&key) {
                     Some(c) => *c += 1,
                     None => {
-                        if present.len() >= MAX_DISTINCT {
+                        if present.len() >= max_distinct {
                             return Err(Error::CardinalityExceeded {
                                 column: column.to_string(),
-                                limit: MAX_DISTINCT,
+                                limit: max_distinct,
                             });
                         }
                         present.insert(key, 1);
@@ -159,7 +174,12 @@ enum EntryKey {
 
 /// Turn the accumulated counts into the `value / count / percent` batch,
 /// applying the requested sort and optional `-n` truncation.
-fn build_batch(counts: Counts, sort: FreqSort, limit: Option<u64>) -> Result<RecordBatch> {
+fn build_batch(
+    counts: Counts,
+    sort: FreqSort,
+    limit: Option<u64>,
+    ordering: OrderMode,
+) -> Result<RecordBatch> {
     let Counts {
         present,
         null,
@@ -174,7 +194,7 @@ fn build_batch(counts: Counts, sort: FreqSort, limit: Option<u64>) -> Result<Rec
         entries.push((EntryKey::Null, null));
     }
 
-    entries.sort_by(|a, b| cmp_entries(a, b, sort));
+    entries.sort_by(|a, b| cmp_entries(a, b, sort, ordering));
 
     // Truncate to the top N, folding everything dropped into `<other>`.
     let mut other: u64 = 0;
@@ -218,25 +238,139 @@ fn build_batch(counts: Counts, sort: FreqSort, limit: Option<u64>) -> Result<Rec
     Ok(batch)
 }
 
-/// Compare two entries under the active sort. `count` sorts by frequency
-/// descending with the value as a deterministic tie-break; `value` sorts purely
-/// by value. Both place NULL last.
-fn cmp_entries(a: &(EntryKey, u64), b: &(EntryKey, u64), sort: FreqSort) -> Ordering {
-    match sort {
-        FreqSort::Count => b.1.cmp(&a.1).then_with(|| cmp_value(&a.0, &b.0)),
-        FreqSort::Value => cmp_value(&a.0, &b.0),
+/// How a column's values order against each other. Values are keyed in the
+/// count map by their CSV rendering, but ordering a rendered string
+/// lexicographically is wrong for numbers (`"10" < "2"`, `"-1" < "-2"`), so the
+/// mode says how to interpret the rendering when comparing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderMode {
+    /// Signed/unsigned integers: compare the parsed integer value.
+    Integer,
+    /// Floating point: compare numerically, NaN last.
+    Float,
+    /// Decimals: compare the parsed decimal magnitude (may exceed f64 range).
+    Decimal,
+    /// Strings, booleans, and temporal types: the rendering already sorts
+    /// correctly lexicographically (ISO-8601 is chronological, bools `false` <
+    /// `true`), so compare the strings directly.
+    Lexical,
+}
+
+impl OrderMode {
+    fn of(ty: &DataType) -> Self {
+        use DataType::*;
+        match ty {
+            Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64 => Self::Integer,
+            Float16 | Float32 | Float64 => Self::Float,
+            Decimal32(_, _) | Decimal64(_, _) | Decimal128(_, _) | Decimal256(_, _) => {
+                Self::Decimal
+            }
+            Dictionary(_, value_ty) => Self::of(value_ty),
+            _ => Self::Lexical,
+        }
     }
 }
 
-/// Value ordering: present values ascending by their rendered string, NULL
-/// always last.
-fn cmp_value(a: &EntryKey, b: &EntryKey) -> Ordering {
+/// Compare two entries under the active sort. `count` sorts by frequency
+/// descending with the value as a deterministic tie-break; `value` sorts purely
+/// by value. Both place NULL last.
+fn cmp_entries(
+    a: &(EntryKey, u64),
+    b: &(EntryKey, u64),
+    sort: FreqSort,
+    ordering: OrderMode,
+) -> Ordering {
+    match sort {
+        FreqSort::Count => b.1.cmp(&a.1).then_with(|| cmp_value(&a.0, &b.0, ordering)),
+        FreqSort::Value => cmp_value(&a.0, &b.0, ordering),
+    }
+}
+
+/// Value ordering: present values ascending by their typed key, NULL always
+/// last. Distinct values with an equal typed key (e.g. `-0.0`/`0.0`, or
+/// decimals that round together) fall back to the rendered string so the total
+/// order — and therefore the output — stays deterministic.
+fn cmp_value(a: &EntryKey, b: &EntryKey, ordering: OrderMode) -> Ordering {
     match (a, b) {
-        (EntryKey::Present(x), EntryKey::Present(y)) => x.cmp(y),
+        (EntryKey::Present(x), EntryKey::Present(y)) => {
+            cmp_rendered(x, y, ordering).then_with(|| x.cmp(y))
+        }
         (EntryKey::Present(_), EntryKey::Null) => Ordering::Less,
         (EntryKey::Null, EntryKey::Present(_)) => Ordering::Greater,
         (EntryKey::Null, EntryKey::Null) => Ordering::Equal,
     }
+}
+
+/// Compare two rendered values under `ordering`. Numeric modes parse the
+/// rendering back into a comparable value; `Lexical` compares strings directly.
+fn cmp_rendered(a: &str, b: &str, ordering: OrderMode) -> Ordering {
+    match ordering {
+        OrderMode::Integer => match (a.parse::<i128>(), b.parse::<i128>()) {
+            (Ok(x), Ok(y)) => x.cmp(&y),
+            _ => a.cmp(b),
+        },
+        OrderMode::Float => cmp_f64(parse_rendered_f64(a), parse_rendered_f64(b)),
+        OrderMode::Decimal => cmp_decimal_str(a, b),
+        OrderMode::Lexical => a.cmp(b),
+    }
+}
+
+/// Parse a CSV-rendered float back to `f64`, honouring the `NaN`/`inf`/`-inf`
+/// spellings the renderer emits.
+fn parse_rendered_f64(s: &str) -> f64 {
+    match s {
+        "NaN" => f64::NAN,
+        "inf" => f64::INFINITY,
+        "-inf" => f64::NEG_INFINITY,
+        _ => s.parse::<f64>().unwrap_or(f64::NAN),
+    }
+}
+
+/// Total order over `f64` with all NaNs sorted last (and equal to each other).
+fn cmp_f64(x: f64, y: f64) -> Ordering {
+    match (x.is_nan(), y.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+    }
+}
+
+/// Compare two CSV-rendered decimal strings (`[-]int[.frac]`) by numeric value,
+/// without going through `f64` (decimals can exceed its range/precision).
+fn cmp_decimal_str(a: &str, b: &str) -> Ordering {
+    let (a_neg, a_mag) = a.strip_prefix('-').map_or((false, a), |r| (true, r));
+    let (b_neg, b_mag) = b.strip_prefix('-').map_or((false, b), |r| (true, r));
+    match (a_neg, b_neg) {
+        (false, true) => Ordering::Greater,
+        (true, false) => Ordering::Less,
+        (false, false) => cmp_decimal_magnitude(a_mag, b_mag),
+        // Both negative: larger magnitude is the smaller number.
+        (true, true) => cmp_decimal_magnitude(a_mag, b_mag).reverse(),
+    }
+}
+
+/// Compare the magnitudes of two non-negative decimal strings.
+fn cmp_decimal_magnitude(a: &str, b: &str) -> Ordering {
+    let (a_int, a_frac) = a.split_once('.').unwrap_or((a, ""));
+    let (b_int, b_frac) = b.split_once('.').unwrap_or((b, ""));
+    cmp_int_digits(a_int, b_int).then_with(|| cmp_frac_digits(a_frac, b_frac))
+}
+
+/// Compare two integer-digit strings numerically (ignoring leading zeros).
+fn cmp_int_digits(a: &str, b: &str) -> Ordering {
+    let a = a.trim_start_matches('0');
+    let b = b.trim_start_matches('0');
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
+/// Compare two fractional-digit strings numerically (right-padding the shorter
+/// with zeros so equal place values line up).
+fn cmp_frac_digits(a: &str, b: &str) -> Ordering {
+    let width = a.len().max(b.len());
+    let a_padded = format!("{a:0<width$}");
+    let b_padded = format!("{b:0<width$}");
+    a_padded.cmp(&b_padded)
 }
 
 /// Format a percentage of `total` with one decimal place, e.g. `45.6%`.
@@ -405,6 +539,7 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -430,6 +565,7 @@ mod tests {
             FreqSort::Value,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -456,6 +592,7 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -474,6 +611,7 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -500,6 +638,7 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -520,6 +659,7 @@ mod tests {
             FreqSort::Count,
             Some("label = 'spam'"),
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -541,6 +681,7 @@ mod tests {
             FreqSort::Count,
             Some("label = 'nope'"),
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -560,6 +701,7 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -594,6 +736,7 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap();
@@ -634,6 +777,7 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap_err();
@@ -668,6 +812,7 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap_err();
@@ -685,9 +830,109 @@ mod tests {
             FreqSort::Count,
             None,
             BinaryFormat::None,
+            MAX_DISTINCT,
         )
         .await
         .unwrap_err();
         assert!(matches!(err, Error::UnknownColumn { .. }));
+    }
+
+    #[tokio::test]
+    async fn integer_sort_value_is_numeric_not_lexical() {
+        // Regression: sorting the rendered string would give -1,-2,10,2,9.
+        use crate::test_support::write_int_fragments;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_int_fragments(tmp.path(), "ints", &[&[9, 10, 10, 2], &[-1, -2, -2]]).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let batch = compute(
+            ds.as_ref(),
+            "id",
+            None,
+            FreqSort::Value,
+            None,
+            BinaryFormat::None,
+            MAX_DISTINCT,
+        )
+        .await
+        .unwrap();
+        let values: Vec<String> = rows(&batch).into_iter().map(|(v, _, _)| v).collect();
+        assert_eq!(values, vec!["-2", "-1", "2", "9", "10"]);
+    }
+
+    #[tokio::test]
+    async fn float_sort_value_is_numeric_with_nan_last() {
+        use arrow_array::Float64Array;
+        let tmp = tempfile::tempdir().unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, true)]));
+        let vals = Float64Array::from(vec![
+            Some(-0.0),
+            Some(0.0),
+            Some(1.5),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ]);
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(vals)]).unwrap();
+        let path = tmp.path().join("floats");
+        let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+        crate::lance::write_dataset(&path, iter).await.unwrap();
+        let ds = dataset::open(&path, None).await.unwrap();
+
+        let batch = compute(
+            ds.as_ref(),
+            "x",
+            None,
+            FreqSort::Value,
+            None,
+            BinaryFormat::None,
+            MAX_DISTINCT,
+        )
+        .await
+        .unwrap();
+        // Numeric order with NaN last; ±0.0 stay two distinct rows (-0 before 0
+        // on the string tie-break).
+        let values: Vec<String> = rows(&batch).into_iter().map(|(v, _, _)| v).collect();
+        assert_eq!(values, vec!["-inf", "-0", "0", "1.5", "inf", "NaN"]);
+    }
+
+    #[tokio::test]
+    async fn cardinality_guard_trips_past_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        // open_labels has three distinct present values (spam/ham/eggs); a cap of
+        // two is exceeded when the third distinct value arrives.
+        let ds = open_labels(tmp.path()).await;
+        let err = compute(
+            ds.as_ref(),
+            "label",
+            None,
+            FreqSort::Count,
+            None,
+            BinaryFormat::None,
+            2,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::CardinalityExceeded { limit: 2, .. }));
+    }
+
+    #[tokio::test]
+    async fn cardinality_guard_allows_exactly_the_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Exactly three distinct present values; NULL is not counted toward the
+        // present-cardinality cap, so a cap of three succeeds.
+        let ds = open_labels(tmp.path()).await;
+        let batch = compute(
+            ds.as_ref(),
+            "label",
+            None,
+            FreqSort::Count,
+            None,
+            BinaryFormat::None,
+            3,
+        )
+        .await
+        .unwrap();
+        // spam/ham/eggs + the NULL row.
+        assert_eq!(batch.num_rows(), 4);
     }
 }

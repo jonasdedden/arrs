@@ -30,7 +30,7 @@ pub enum Error {
     UnsupportedCsvType { column: String, data_type: String },
 
     #[error(
-        "column '{column}' has type {data_type}; freq supports only primitive columns (strings, numbers, bools, dates, timestamps), not nested or binary types"
+        "column '{column}' has type {data_type}, which freq cannot count; supported columns are scalar primitives (strings, numbers, booleans, dates, times, timestamps, decimals)"
     )]
     UnsupportedFreqType { column: String, data_type: String },
 

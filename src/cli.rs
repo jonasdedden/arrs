@@ -206,8 +206,9 @@ pub enum Command {
         #[arg(long)]
         column: String,
         /// Show only the top N rows; the remaining values are summarized as an
-        /// `<other>` row. Without this, every distinct value is listed.
-        #[arg(short = 'n', long)]
+        /// `<other>` row. Without this, every distinct value is listed. Must be
+        /// at least 1.
+        #[arg(short = 'n', long, value_parser = clap::value_parser!(u64).range(1..))]
         limit: Option<u64>,
         /// Row ordering: `count` (most frequent first, default) or `value`.
         #[arg(long, value_enum, default_value_t = FreqSort::Count)]

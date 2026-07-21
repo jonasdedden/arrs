@@ -1139,5 +1139,22 @@ fn freq_on_nested_column_fails_cleanly() {
     let tmp = tempdir();
     let p = runtime().block_on(async { write_full(&tmp, "f").await });
     let out = run_cli(&["freq", "--column", "tags", "--format", "csv"], &p);
-    assert_clean_failure(&out, "not nested or binary");
+    assert_clean_failure(&out, "freq cannot count");
+}
+
+#[test]
+fn freq_rejects_zero_limit() {
+    // clap enforces -n >= 1; `-n 0` is a usage error, nothing reaches stdout.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &["freq", "--column", "name", "-n", "0", "--format", "csv"],
+        &p,
+    );
+    assert!(!out.status.success(), "expected -n 0 to be rejected");
+    assert!(
+        out.stdout.is_empty(),
+        "stdout should be empty: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
