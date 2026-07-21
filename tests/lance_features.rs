@@ -1,6 +1,6 @@
 //! Integration tests for Lance-specific features:
 //! - `versions` / `branches` / `indices` commands.
-//! - `--branch` / `--version` / `--tag` checkout flags.
+//! - `--branch` / `--version` / `--tag` / `--as-of` checkout flags.
 
 mod common;
 
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
 use arrow_array::{Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use chrono::{DateTime, Duration, Utc};
 use futures::StreamExt as _;
 use lance::Dataset as LanceInner;
 use lance::index::vector::VectorIndexParams;
@@ -781,6 +782,208 @@ fn checkout_unknown_branch_errors() {
         };
         let res = dataset::open(&path, Some(&lance)).await;
         assert!(res.is_err());
+    });
+}
+
+// ------------------------------ --as-of ------------------------------------
+
+/// Read the `(version, timestamp)` pairs for a branch straight from Lance, so
+/// tests can pick target instants relative to the *actual* commit times rather
+/// than sleeping between writes. Timestamps carry nanosecond precision, so even
+/// versions created in quick succession are strictly ordered and distinct,
+/// which keeps timestamp-based selection deterministic.
+async fn version_times(path: &str, branch: Option<&str>) -> Vec<(u64, DateTime<Utc>)> {
+    let ds = match branch {
+        Some(b) => LanceInner::open(path)
+            .await
+            .unwrap()
+            .checkout_branch(b)
+            .await
+            .unwrap(),
+        None => LanceInner::open(path).await.unwrap(),
+    };
+    let mut v: Vec<(u64, DateTime<Utc>)> = ds
+        .versions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|v| (v.version, v.timestamp))
+        .collect();
+    v.sort_by_key(|(ver, _)| *ver);
+    v
+}
+
+fn as_of_args(target: DateTime<Utc>, branch: Option<&str>) -> LanceArgs {
+    LanceArgs {
+        as_of: Some(target.to_rfc3339()),
+        branch: branch.map(str::to_string),
+        ..LanceArgs::default()
+    }
+}
+
+#[test]
+fn as_of_exactly_equal_selects_that_version() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+        let versions = version_times(&path, None).await;
+
+        // Query with v2's exact commit timestamp: `<=` includes v2 itself, and
+        // v3's strictly-later timestamp is excluded → v2 (v1 2 rows + 1 append).
+        let (v2, t2) = versions[1];
+        assert_eq!(v2, 2);
+        let ds = dataset::open(&path, Some(&as_of_args(t2, None)))
+            .await
+            .unwrap();
+        assert_eq!(ds.count_rows(None).await.unwrap(), 3);
+    });
+}
+
+#[test]
+fn as_of_between_versions_selects_earlier() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+        let versions = version_times(&path, None).await;
+
+        // An instant strictly between v1 and v2 must resolve to v1 (2 rows).
+        let (_, t1) = versions[0];
+        let (_, t2) = versions[1];
+        let mid = t1 + (t2 - t1) / 2;
+        assert!(mid > t1 && mid < t2);
+        let ds = dataset::open(&path, Some(&as_of_args(mid, None)))
+            .await
+            .unwrap();
+        assert_eq!(ds.count_rows(None).await.unwrap(), 2);
+    });
+}
+
+#[test]
+fn as_of_after_latest_selects_latest() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+        let versions = version_times(&path, None).await;
+
+        // Far in the future → the newest version on main (v3, 4 rows).
+        let (_, latest) = *versions.last().unwrap();
+        let ds = dataset::open(
+            &path,
+            Some(&as_of_args(latest + Duration::days(3650), None)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ds.count_rows(None).await.unwrap(), 4);
+    });
+}
+
+#[test]
+fn as_of_before_first_version_errors_with_earliest() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+        let versions = version_times(&path, None).await;
+        let (_, t1) = versions[0];
+
+        let before = t1 - Duration::seconds(1);
+        let err = dataset::open(&path, Some(&as_of_args(before, None)))
+            .await
+            .unwrap_err();
+        match &err {
+            Error::AsOfBeforeFirstVersion {
+                earliest,
+                requested,
+            } => {
+                // The earliest valid timestamp is echoed at full (sub-second)
+                // precision so re-passing it resolves to v1, not before it.
+                assert_eq!(
+                    earliest,
+                    &t1.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                );
+                // `requested` echoes the user's raw input verbatim.
+                assert_eq!(requested, &before.to_rfc3339());
+            }
+            other => panic!("expected AsOfBeforeFirstVersion, got {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn as_of_selects_correct_version_on_non_default_branch() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+        let dev_versions = version_times(&path, Some("dev")).await;
+
+        // `dev` was branched from main v2 (3 rows) and never appended to. An
+        // instant at or after dev's latest version resolves to that tip.
+        let (_, latest) = *dev_versions.last().unwrap();
+        let ds = dataset::open(&path, Some(&as_of_args(latest, Some("dev"))))
+            .await
+            .unwrap();
+        assert_eq!(ds.count_rows(None).await.unwrap(), 3);
+    });
+}
+
+#[test]
+fn as_of_before_first_version_on_branch_errors() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+        let dev_versions = version_times(&path, Some("dev")).await;
+        let (_, earliest) = dev_versions[0];
+
+        let before = earliest - Duration::seconds(1);
+        let err = dataset::open(&path, Some(&as_of_args(before, Some("dev"))))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::AsOfBeforeFirstVersion { .. }));
+    });
+}
+
+#[test]
+fn as_of_accepts_date_only_format() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+
+        // A date far in the future (midnight UTC) selects the latest version.
+        let lance = LanceArgs {
+            as_of: Some("2999-01-01".to_string()),
+            ..LanceArgs::default()
+        };
+        let ds = dataset::open(&path, Some(&lance)).await.unwrap();
+        assert_eq!(ds.count_rows(None).await.unwrap(), 4);
+    });
+}
+
+#[test]
+fn as_of_accepts_naive_datetime_format() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+
+        let lance = LanceArgs {
+            as_of: Some("2999-01-01T00:00:00".to_string()),
+            ..LanceArgs::default()
+        };
+        let ds = dataset::open(&path, Some(&lance)).await.unwrap();
+        assert_eq!(ds.count_rows(None).await.unwrap(), 4);
+    });
+}
+
+#[test]
+fn as_of_invalid_format_errors() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fixture(&tmp, "ds").await;
+
+        let lance = LanceArgs {
+            as_of: Some("yesterday".to_string()),
+            ..LanceArgs::default()
+        };
+        let err = dataset::open(&path, Some(&lance)).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidAsOf(_)));
     });
 }
 

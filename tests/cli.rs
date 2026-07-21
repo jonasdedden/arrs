@@ -1028,3 +1028,51 @@ fn search_requires_a_query_vector() {
     ]);
     assert!(res.is_err(), "expected missing query vector to be rejected");
 }
+
+// ----------------------------- --as-of parsing ------------------------------
+
+/// `--as-of` and `--version` both name a single version → clap must reject the
+/// combination.
+#[test]
+fn as_of_conflicts_with_version() {
+    let res = <Cli as clap::Parser>::try_parse_from([
+        "arrs",
+        "head",
+        "--as-of",
+        "2026-07-01T12:00:00Z",
+        "--version",
+        "1",
+        "ds.lance",
+    ]);
+    assert!(res.is_err(), "expected --as-of + --version to be rejected");
+}
+
+/// `--as-of` and `--tag` are likewise mutually exclusive.
+#[test]
+fn as_of_conflicts_with_tag() {
+    let res = <Cli as clap::Parser>::try_parse_from([
+        "arrs",
+        "head",
+        "--as-of",
+        "2026-07-01",
+        "--tag",
+        "release",
+        "ds.lance",
+    ]);
+    assert!(res.is_err(), "expected --as-of + --tag to be rejected");
+}
+
+/// `--as-of` composes with `--branch` (they select different axes).
+#[test]
+fn as_of_combines_with_branch() {
+    let res = <Cli as clap::Parser>::try_parse_from([
+        "arrs",
+        "head",
+        "--as-of",
+        "2026-07-01T12:00:00Z",
+        "--branch",
+        "dev",
+        "ds.lance",
+    ]);
+    assert!(res.is_ok(), "expected --as-of + --branch to parse: {res:?}");
+}

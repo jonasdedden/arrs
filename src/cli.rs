@@ -33,9 +33,10 @@ pub enum SchemaType {
 
 /// Lance-specific selectors for which version of a dataset to read.
 ///
-/// `--branch` is independent and can be combined with either `--version` or
-/// `--tag`. `--version` and `--tag` are mutually exclusive (a tag is just a
-/// named version). With no flags set, the latest version of `main` is used.
+/// `--branch` is independent and can be combined with any of `--version`,
+/// `--tag`, or `--as-of`. `--version`, `--tag`, and `--as-of` all name a
+/// single version and are therefore mutually exclusive. With no flags set,
+/// the latest version of `main` is used.
 #[derive(Debug, Clone, Args, Default)]
 pub struct LanceArgs {
     /// Read from the named Lance branch (default: main).
@@ -49,12 +50,23 @@ pub struct LanceArgs {
     /// Read from a specific Lance tag on the chosen branch.
     #[arg(long, conflicts_with = "version")]
     pub tag: Option<String>,
+
+    /// Read the latest version whose commit timestamp is at or before this
+    /// instant, on the chosen branch. Accepts RFC 3339 with an offset
+    /// (`2026-07-01T12:00:00Z`), a naive datetime interpreted as UTC
+    /// (`2026-07-01T12:00:00`), or a date interpreted as midnight UTC
+    /// (`2026-07-01`).
+    #[arg(long = "as-of", conflicts_with_all = ["version", "tag"])]
+    pub as_of: Option<String>,
 }
 
 impl LanceArgs {
     /// True when at least one Lance-specific selector was supplied.
     pub fn is_any_set(&self) -> bool {
-        self.branch.is_some() || self.version.is_some() || self.tag.is_some()
+        self.branch.is_some()
+            || self.version.is_some()
+            || self.tag.is_some()
+            || self.as_of.is_some()
     }
 }
 
