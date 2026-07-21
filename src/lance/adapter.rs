@@ -411,6 +411,9 @@ impl LanceCapabilities for LanceDataset {
         // Everything except size comes straight from the manifest, so no I/O
         // happens on the common path. We only fall back to a per-fragment await
         // for legacy fragments whose manifest omits the row/deletion counts.
+        // Those fallback awaits (`physical_rows()` / `count_deletions()`) are
+        // untested by construction: lance 4.0 always populates these fields for
+        // freshly written datasets, so the test suite never reaches them.
         let mut out: Vec<FragmentInfo> = Vec::with_capacity(fragments.len());
         for frag in &fragments {
             let meta = frag.metadata();
@@ -467,7 +470,9 @@ impl LanceCapabilities for LanceDataset {
             // Prefer the size cached in the manifest; only hit the object store
             // for files that don't record it. Requests run concurrently, keyed
             // by index so results can be reassembled after `buffer_unordered`
-            // returns them out of order.
+            // returns them out of order. The object-store `size()` fallback is
+            // untested by construction: lance 4.0 records `file_size_bytes` in
+            // the manifest for fresh datasets, so tests take the cached branch.
             let sized: Vec<(usize, u64)> = futures::stream::iter(specs)
                 .map(|(i, files)| {
                     let data_dir = &data_dir;

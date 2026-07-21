@@ -74,8 +74,8 @@ pub struct FilterArg {
 #[command(name = "arrs", about = "Inspect Arrow-based datasets.", version)]
 pub struct Cli {
     /// Output format for row-producing commands. When unset, metadata commands
-    /// (versions/branches/tags/indices) default to `table` (fully buffered to enable column
-    /// alignment); everything else to `jsonl` (streaming).
+    /// (versions/branches/tags/indices/fragments) default to `table` (fully buffered to enable
+    /// column alignment); everything else to `jsonl` (streaming).
     #[arg(long, global = true, value_enum)]
     pub format: Option<Format>,
 

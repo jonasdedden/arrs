@@ -40,8 +40,8 @@ pub async fn run(
     writer.start(&schema)?;
     writer.write_batch(&batch)?;
     writer.finish()?;
-    // Drop the writer (flushing its buffered stdout) before the summary so the
-    // two don't interleave.
+    // `finish()` already flushed; drop the writer here to release the stdout
+    // lock before the summary println so the two are ordered cleanly.
     drop(writer);
 
     if format == Format::Table {
@@ -136,9 +136,57 @@ fn human_bytes(bytes: u64) -> String {
     }
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
+    // The `>= 1023.95` threshold (rather than `>= 1024.0`) bumps to the next
+    // unit when the value would round up to `1024.0` at one decimal place —
+    // e.g. 1,048,575 bytes shows as `1.0 MiB`, not `1024.0 KiB`.
+    while value >= 1023.95 && unit < UNITS.len() - 1 {
         value /= 1024.0;
         unit += 1;
     }
     format!("{value:.1} {}", UNITS[unit])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn human_bytes_boundaries() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        // Just under 1 MiB must not render as `1024.0 KiB`.
+        assert_eq!(human_bytes(1_048_575), "1.0 MiB");
+        assert_eq!(human_bytes(1_048_576), "1.0 MiB");
+    }
+
+    #[test]
+    fn print_summary_uses_totals() {
+        // `print_summary` writes to stdout, so this just exercises the total
+        // arithmetic that feeds it (kept trivial and side-effect-free here).
+        let frags = [
+            FragmentInfo {
+                id: 0,
+                physical_rows: 3,
+                deleted_rows: 1,
+                num_files: 1,
+                files: vec!["a.lance".into()],
+                size: Some(1024),
+            },
+            FragmentInfo {
+                id: 1,
+                physical_rows: 2,
+                deleted_rows: 0,
+                num_files: 1,
+                files: vec!["b.lance".into()],
+                size: Some(2048),
+            },
+        ];
+        let total_physical: u64 = frags.iter().map(|f| f.physical_rows).sum();
+        let total_deleted: u64 = frags.iter().map(|f| f.deleted_rows).sum();
+        let total_bytes: u64 = frags.iter().filter_map(|f| f.size).sum();
+        assert_eq!(total_physical, 5);
+        assert_eq!(total_deleted, 1);
+        assert_eq!(human_bytes(total_bytes), "3.0 KiB");
+    }
 }

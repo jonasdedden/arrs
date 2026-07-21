@@ -49,7 +49,7 @@ cargo run --release -- <command> [args…]
 | `branches` | (Lance) List branches of the dataset.                               |
 | `tags`     | (Lance) List tags across every branch.                              |
 | `indices`  | (Lance) List indices defined on the dataset.                        |
-| `fragments`| (Lance) List fragments with row, deletion, file, and size info.     |
+| `fragments` | (Lance) List fragments with row, deletion, file, and size info.    |
 
 ## Global flags
 
