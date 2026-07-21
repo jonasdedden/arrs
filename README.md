@@ -228,8 +228,8 @@ first thing you usually want — `BTree`, `IVF_PQ`, `INVERTED`, …):
 
 ```sh
 $ arrs indices dataset.lance
-| name    | type   | columns   | dataset_version | created_at | uuid |
-| idx_id  | BTree  | ["id"]    | 4               | …          | …    |
+| name    | type   | uuid | columns   | dataset_version | created_at |
+| idx_id  | BTree  | …    | ["id"]    | 4               | …          |
 ```
 
 Lance indices go stale as rows are appended after the index was built, so

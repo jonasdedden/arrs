@@ -176,7 +176,7 @@ pub struct BranchInfo {
 #[derive(Debug, Clone)]
 pub struct IndexInfo {
     pub name: String,
-    /// Index type as Lance reports it (e.g. `BTREE`, `IVF_PQ`, `INVERTED`).
+    /// Index type as Lance reports it (e.g. `BTree`, `IVF_PQ`, `INVERTED`).
     pub index_type: String,
     pub uuid: String,
     pub columns: Vec<String>,
@@ -219,7 +219,7 @@ pub struct ColumnStats {
 #[derive(Debug, Clone)]
 pub struct IndexStats {
     pub name: String,
-    /// Index type as Lance reports it (e.g. `BTREE`, `IVF_PQ`).
+    /// Index type as Lance reports it (e.g. `BTree`, `IVF_PQ`).
     pub index_type: String,
     /// Rows currently covered by the index.
     pub indexed_rows: u64,

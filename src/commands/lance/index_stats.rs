@@ -86,3 +86,33 @@ fn coverage_display(stats: &IndexStats) -> String {
         None => "n/a".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stats(indexed: u64, unindexed: u64) -> IndexStats {
+        IndexStats {
+            name: "idx".to_string(),
+            index_type: "BTree".to_string(),
+            indexed_rows: indexed,
+            unindexed_rows: unindexed,
+            detail: String::new(),
+        }
+    }
+
+    #[test]
+    fn coverage_display_rounds_to_one_decimal() {
+        assert_eq!(coverage_display(&stats(980_000, 20_000)), "98.0%");
+        assert_eq!(coverage_display(&stats(100, 0)), "100.0%");
+        // 4/6 = 0.6666… rounds to 66.7%.
+        assert_eq!(coverage_display(&stats(4, 2)), "66.7%");
+        // 2/3 of a thousand → 66.7% as well (half-up on the hidden digit).
+        assert_eq!(coverage_display(&stats(1, 2)), "33.3%");
+    }
+
+    #[test]
+    fn coverage_display_is_na_for_empty_index() {
+        assert_eq!(coverage_display(&stats(0, 0)), "n/a");
+    }
+}

@@ -417,9 +417,13 @@ impl LanceCapabilities for LanceDataset {
                 .collect();
             // The index type isn't on the loaded metadata; it lives in the
             // statistics JSON. Index counts are small, so a call per index is
-            // fine (the issue explicitly sanctions this).
-            let (_, stats) = self.load_index_statistics(&m.name).await?;
-            let index_type = index_type_of(&stats);
+            // fine (the issue explicitly sanctions this). A single index whose
+            // statistics can't be loaded must not fail the whole listing, so
+            // degrade that row to `UNKNOWN` rather than propagating the error.
+            let index_type = match self.load_index_statistics(&m.name).await {
+                Ok((_, stats)) => index_type_of(&stats),
+                Err(_) => "UNKNOWN".to_string(),
+            };
             out.push(IndexInfo {
                 name: m.name.clone(),
                 index_type,

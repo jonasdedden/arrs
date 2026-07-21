@@ -656,6 +656,38 @@ fn list_fragments_respects_version_checkout() {
     });
 }
 
+#[test]
+fn index_stats_empty_index_has_undefined_coverage() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = tmp.path().join("empty");
+        let uri = path.to_string_lossy().into_owned();
+
+        // A dataset with zero rows still accepts a scalar index.
+        let iter = RecordBatchIterator::new(vec![Ok(batch(Vec::new(), Vec::new()))], schema());
+        let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+        ds.create_index(
+            &["id"],
+            IndexType::BTree,
+            Some("idx_id".to_string()),
+            &ScalarIndexParams::default(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let stats = lance.index_stats().await.unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].indexed_rows, 0);
+        assert_eq!(stats[0].unindexed_rows, 0);
+        // No rows → coverage is undefined (the `n/a` display branch).
+        assert!(stats[0].coverage().is_none());
+    });
+}
+
 // ----------------------------- checkout flags -------------------------------
 
 #[test]
