@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rowcount`, and `sample`. The filter is applied before row selection, and
   filtered `rowcount` uses the backend's native filtered count (pushed into
   Lance scalar indices when available). (#6)
+- `fragments` command (Lance only): lists dataset fragments with physical rows,
+  deleted rows, data file count/paths and on-disk size, with a table-mode summary
+  line, `--verbose` and `--no-size` flags, and `--branch`/`--version`/`--tag`
+  support (#15).
 
 ### Changed
 

@@ -141,12 +141,21 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             input,
             lance: lance_args,
         } => lance::indices::run(&input, &lance_args, format, binary_format).await,
+        Command::Fragments {
+            input,
+            verbose,
+            no_size,
+            lance: lance_args,
+        } => {
+            lance::fragments::run(&input, &lance_args, verbose, no_size, format, binary_format)
+                .await
+        }
     }
 }
 
 /// Apply the per-command default when `--format` was not given on the CLI.
-/// Metadata commands (versions/branches/tags/indices) default to `Table`;
-/// everything else defaults to `Jsonl`.
+/// Metadata commands (versions/branches/tags/indices/fragments) default to
+/// `Table`; everything else defaults to `Jsonl`.
 fn resolve_format(explicit: Option<Format>, cmd: &Command) -> Format {
     if let Some(f) = explicit {
         return f;
@@ -155,7 +164,8 @@ fn resolve_format(explicit: Option<Format>, cmd: &Command) -> Format {
         Command::Versions { .. }
         | Command::Branches { .. }
         | Command::Tags { .. }
-        | Command::Indices { .. } => Format::Table,
+        | Command::Indices { .. }
+        | Command::Fragments { .. } => Format::Table,
         _ => Format::Jsonl,
     }
 }

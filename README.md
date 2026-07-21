@@ -49,12 +49,13 @@ cargo run --release -- <command> [args…]
 | `branches` | (Lance) List branches of the dataset.                               |
 | `tags`     | (Lance) List tags across every branch.                              |
 | `indices`  | (Lance) List indices defined on the dataset.                        |
+| `fragments`| (Lance) List fragments with row, deletion, file, and size info.     |
 
 ## Global flags
 
 | Flag                        | Default | Purpose                                                     |
 |-----------------------------|---------|-------------------------------------------------------------|
-| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`, `jsonl` everywhere else. |
+| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`fragments`, `jsonl` everywhere else. |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
 | `--columns <a,b,…>`         | –       | Comma-separated include list. User order is preserved.      |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Takes precedence over `--columns`.|
@@ -150,6 +151,24 @@ arrs versions --branch dev dataset.lance          # every version on `dev`
 arrs branches dataset.lance
 arrs tags dataset.lance                           # cross-branch tag listing
 arrs indices dataset.lance
+```
+
+### Fragments
+
+Fragments are the physical unit of a Lance dataset. `arrs fragments` lists one
+row per fragment — physical rows, tombstoned (deleted) rows, data file count and
+on-disk size — plus a summary line of totals in table mode. Row/deletion/file
+info comes from the manifest, so it stays fast; sizes come from the manifest
+where cached and otherwise from concurrent object-store lookups. It honours the
+`--branch`/`--version`/`--tag` selectors since fragments are per-version.
+
+```sh
+arrs fragments dataset.lance                       # fragments of main's latest version
+arrs fragments --version 3 dataset.lance           # fragments as of version 3
+arrs fragments --branch dev dataset.lance          # fragments on `dev`
+arrs fragments --verbose dataset.lance             # include data file paths in the table
+arrs fragments --no-size dataset.lance             # skip size lookups (fast/remote datasets)
+arrs fragments --format jsonl dataset.lance        # machine-readable, raw byte sizes
 ```
 
 ### Binary columns

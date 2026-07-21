@@ -197,4 +197,19 @@ pub enum Command {
         #[command(flatten)]
         lance: LanceArgs,
     },
+
+    /// (Lance only) List fragments with row, deletion, file, and size info.
+    Fragments {
+        input: PathBuf,
+        /// Show each fragment's data file paths in table output (they are
+        /// always included in jsonl/csv output).
+        #[arg(long)]
+        verbose: bool,
+        /// Skip on-disk size computation, avoiding object-store lookups on very
+        /// remote or huge datasets. The `size` column is left empty.
+        #[arg(long = "no-size")]
+        no_size: bool,
+        #[command(flatten)]
+        lance: LanceArgs,
+    },
 }
