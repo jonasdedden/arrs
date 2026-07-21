@@ -29,6 +29,16 @@ pub enum Error {
     )]
     UnsupportedCsvType { column: String, data_type: String },
 
+    #[error(
+        "column '{column}' has type {data_type}, which freq cannot count; supported columns are scalar primitives (strings, numbers, booleans, dates, times, timestamps, decimals)"
+    )]
+    UnsupportedFreqType { column: String, data_type: String },
+
+    #[error(
+        "column '{column}' has more than {limit} distinct values; freq refuses to accumulate this many (is this a high-cardinality column such as an id or UUID?). Narrow the input with --where or choose another column"
+    )]
+    CardinalityExceeded { column: String, limit: usize },
+
     #[error("--indices parse error: {0}")]
     IndexParse(String),
 

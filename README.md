@@ -45,6 +45,7 @@ cargo run --release -- <command> [args…]
 | `rowcount` | Print the number of rows.                                           |
 | `sample`   | Print `N` random rows, no replacement. `--seed` for reproducibility.|
 | `stats`    | Per-column summary statistics (a `df.describe()` for datasets).     |
+| `freq`     | Value counts for a column: each distinct value, its count and percent.|
 | `schema`   | Print the logical (Arrow) or physical (Lance-native) schema.        |
 | `versions` | (Lance) List versions of the dataset.                               |
 | `branches` | (Lance) List branches of the dataset.                               |
@@ -94,11 +95,11 @@ denied) are surfaced with the offending URI and the underlying cause.
 
 | Flag                        | Default | Purpose                                                     |
 |-----------------------------|---------|-------------------------------------------------------------|
-| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`, `jsonl` everywhere else. |
+| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`, `jsonl` everywhere else. |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
 | `--columns <a,b,…>`         | –       | Comma-separated include list. User order is preserved.      |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Takes precedence over `--columns`.|
-| `--where <predicate>`       | –       | Keep only rows matching a SQL-style predicate. Supported by `cat`, `head`, `tail`, `rowcount`, `sample`, `stats`. See below. |
+| `--where <predicate>`       | –       | Keep only rows matching a SQL-style predicate. Supported by `cat`, `head`, `tail`, `rowcount`, `sample`, `stats`, `freq`. See below. |
 
 ## Examples
 
@@ -117,6 +118,9 @@ arrs take --indices '-1,0,2:4' dataset.lance
 
 # Reproducible random sample of 100 rows.
 arrs sample -n 100 --seed 42 dataset.lance
+
+# Value counts for a column (class balance, enum sanity checks).
+arrs freq --column label dataset.lance
 
 # Concatenate two partitions (must share the same schema) and keep two columns.
 arrs cat --columns id,score part_a.lance part_b.lance
@@ -168,6 +172,7 @@ addresses rows positionally — see below):
 | `rowcount` | Count matching rows (pushed into scalar indices when available). |
 | `sample`   | Randomly sample `N` of the *matching* rows.                      |
 | `stats`    | Compute statistics over only the *matching* rows.                |
+| `freq`     | Value counts over the *matching* subset only.                    |
 
 The filter is applied **before** row selection, so `head`/`tail`/`sample`
 operate on the matching rows rather than filtering a positional slice.
@@ -190,6 +195,66 @@ arrs sample -n 100 --where "split = 'test'" dataset.lance
 is ambiguous and is rejected with a clear error — filter with `head`/`cat`
 instead. Invalid predicates surface the backend's parse error as
 `invalid --where predicate: …`.
+
+### Value counts with `freq`
+
+`freq --column <name>` answers "what values does this column take, and how
+often?" — class balance of a label, enum sanity checks, spotting typo'd
+categories. It emits one row per distinct value with its `count` and `percent`
+(of all scanned rows), defaulting to the `table` format:
+
+```sh
+$ arrs freq --column label dataset.lance
++-------+-------+---------+
+| value | count | percent |
++-------+-------+---------+
+| spam  | 91234 | 45.6%   |
+| ham   | 88765 | 44.4%   |
+| NULL  | 20001 | 10.0%   |
++-------+-------+---------+
+```
+
+- Nulls are counted and shown as an explicit `NULL` row.
+- `-n/--limit N` (`N` ≥ 1) keeps only the top `N` rows; everything else is folded
+  into a trailing `<other>` row so the percentages still add up.
+- `--sort count` (default) orders by frequency, breaking ties by value; `--sort
+  value` orders by value. Ordering is by the value's real type — numbers sort
+  numerically (not as strings), temporals chronologically — with `NULL` and
+  `NaN` always last. Distinct values that compare equal (e.g. `-0.0` and `0.0`)
+  fall back to a string tie-break so the output stays deterministic.
+- Only primitive columns are supported (strings, numbers, bools, dates,
+  timestamps, decimals); nested and binary columns are rejected with a clear
+  error.
+- Works with `--where` (counts are computed over the matching subset) and with
+  `--format jsonl|csv` for machine-readable output.
+
+A note on how values are keyed: each value is identified by its CSV rendering
+(the same text `cat --format csv` would print). Two consequences worth knowing:
+
+- Floating-point `-0.0` and `0.0` render differently (`-0` vs `0`) and so are
+  two distinct rows, while every `NaN` bit pattern renders as `NaN` and collapses
+  into a single row.
+- A literal string value of `"NULL"` (or `"<other>"`) renders identically to the
+  real null row (or the truncation remainder). The counts are always tracked
+  separately and correctly — only the printed label collides — but the rendered
+  table cannot tell them apart. This holds in every format (`jsonl` also prints
+  the label as the string `"NULL"`, not JSON `null`), so if you need to
+  distinguish them unambiguously, filter the literal out with `--where` first.
+
+```sh
+# Top 20 values only, remainder summarized as `<other>`.
+arrs freq --column url -n 20 dataset.lance
+
+# Alphabetical, as CSV.
+arrs freq --column country --sort value --format csv dataset.lance
+
+# Class balance within the test split.
+arrs freq --column label --where "split = 'test'" dataset.lance
+```
+
+Memory use is proportional to the column's cardinality; past ~1M distinct
+values `freq` bails with a helpful error rather than eating RAM on a
+high-cardinality column (an id or UUID).
 
 ### Lance versioning, branches and tags
 
@@ -393,5 +458,5 @@ preserved and duplicates are emitted as-is.
 - Nested cells (list, struct, map) are JSON-encoded inside the cell —
   e.g. `["id"]` for a single-element list. Strictly more permissive than CSV.
 - **Buffers all rows** before emitting (column widths require the full table).
-  Default for the four metadata commands (small row counts), opt-in for
-  row-producing commands; prefer `jsonl`/`csv` when streaming large datasets.
+  Default for `freq` and the four metadata commands (small row counts), opt-in
+  for row-producing commands; prefer `jsonl`/`csv` when streaming large datasets.

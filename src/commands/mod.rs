@@ -1,5 +1,6 @@
 mod cat;
 mod common;
+mod freq;
 mod head;
 mod lance;
 mod rowcount;
@@ -119,6 +120,26 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             )
             .await
         }
+        Command::Freq {
+            input,
+            column,
+            limit,
+            sort,
+            filter,
+            lance,
+        } => {
+            freq::run(
+                &input,
+                &column,
+                limit,
+                sort,
+                format,
+                binary_format,
+                filter.predicate.as_deref(),
+                &lance,
+            )
+            .await
+        }
         Command::Schema { input, ty, lance } => {
             schema::run(&input, ty, columns, exclude, &lance).await
         }
@@ -206,14 +227,16 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 }
 
 /// Apply the per-command default when `--format` was not given on the CLI.
-/// Metadata commands (versions/branches/tags/indices/fragments/stats) default to
+/// Summary/metadata commands (freq/versions/branches/tags/indices/index-stats/
+/// fragments/stats) default to
 /// `Table`; everything else defaults to `Jsonl`.
 fn resolve_format(explicit: Option<Format>, cmd: &Command) -> Format {
     if let Some(f) = explicit {
         return f;
     }
     match cmd {
-        Command::Versions { .. }
+        Command::Freq { .. }
+        | Command::Versions { .. }
         | Command::Branches { .. }
         | Command::Tags { .. }
         | Command::Indices { .. }

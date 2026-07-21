@@ -1076,3 +1076,85 @@ fn as_of_combines_with_branch() {
     ]);
     assert!(res.is_ok(), "expected --as-of + --branch to parse: {res:?}");
 }
+
+// -------------------- freq (value counts) --------------------
+
+#[test]
+fn freq_defaults_to_table_format() {
+    // No --format given: freq is a summary command and defaults to Table.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(&["freq", "--column", "name"], &p);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("| value"), "header missing:\n{stdout}");
+    assert!(stdout.contains("| count"), "header missing:\n{stdout}");
+    assert!(stdout.contains("| alice"), "value row missing:\n{stdout}");
+    // The one null `name` cell becomes an explicit NULL row.
+    assert!(stdout.contains("| NULL"), "NULL row missing:\n{stdout}");
+}
+
+#[test]
+fn freq_csv_reports_counts_and_percent() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    // Every name is distinct (4 present + 1 null over 5 rows) → each 20%.
+    let out = run_cli(
+        &[
+            "freq", "--column", "name", "--sort", "value", "--format", "csv",
+        ],
+        &p,
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines[0], "value,count,percent");
+    assert_eq!(lines[1], "alice,1,20.0%");
+    // NULL sorts last under --sort value.
+    assert_eq!(*lines.last().unwrap(), "NULL,1,20.0%");
+}
+
+#[test]
+fn freq_where_composes_over_filtered_subset() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &[
+            "freq", "--column", "name", "--format", "csv", "--where", "id >= 4",
+        ],
+        &p,
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Only ids 4,5 survive: names dan, eve — each 50% of the filtered subset.
+    let mut data: Vec<&str> = stdout.lines().skip(1).collect();
+    data.sort_unstable();
+    assert_eq!(data, vec!["dan,1,50.0%", "eve,1,50.0%"]);
+}
+
+#[test]
+fn freq_on_nested_column_fails_cleanly() {
+    // The full fixture has a List<Utf8> column `tags`; freq must reject it and
+    // leave stdout untouched.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_full(&tmp, "f").await });
+    let out = run_cli(&["freq", "--column", "tags", "--format", "csv"], &p);
+    assert_clean_failure(&out, "freq cannot count");
+}
+
+#[test]
+fn freq_rejects_zero_limit() {
+    // clap enforces -n >= 1; `-n 0` is a usage error, nothing reaches stdout.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &["freq", "--column", "name", "-n", "0", "--format", "csv"],
+        &p,
+    );
+    assert!(!out.status.success(), "expected -n 0 to be rejected");
+    assert!(
+        out.stdout.is_empty(),
+        "stdout should be empty: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
