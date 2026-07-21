@@ -1,16 +1,17 @@
 use futures::StreamExt;
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Format, LanceArgs};
+use crate::cli::{Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema, schemas_match};
 use crate::dataset::{self, ScanOptions};
 use crate::error::Error;
+use crate::output::RenderOptions;
 use crate::projection;
 
 pub async fn run(
     inputs: &[String],
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
     filter: Option<&str>,
@@ -51,7 +52,7 @@ pub async fn run(
         streams.push(ds.scan(&options).await?);
     }
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&projected_schema)?;
     for mut stream in streams {
         while let Some(batch) = stream.next().await {

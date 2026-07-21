@@ -13,6 +13,7 @@ mod take;
 use crate::Result;
 use crate::cli::{BinaryFormat, Cli, Command, Format};
 use crate::error::Error;
+use crate::output::RenderOptions;
 
 /// What a successfully-run command signals to the process exit code.
 ///
@@ -28,7 +29,12 @@ pub enum Outcome {
 pub async fn dispatch(cli: Cli) -> Result<Outcome> {
     let columns = cli.columns.as_deref();
     let exclude = cli.exclude_columns.as_deref();
-    let binary_format = cli.binary_format;
+    let render = RenderOptions {
+        binary_format: cli.binary_format,
+        max_list_items: cli.max_list_items,
+        max_cell_width: cli.max_cell_width,
+        float_precision: cli.float_precision,
+    };
     if let Some(name) = command_ignoring_format(&cli.command)
         && cli.format.is_some()
     {
@@ -77,7 +83,7 @@ async fn run_command(
             cat::run(
                 &inputs,
                 format,
-                binary_format,
+                render,
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
@@ -95,7 +101,7 @@ async fn run_command(
                 &input,
                 limit,
                 format,
-                binary_format,
+                render,
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
@@ -113,7 +119,7 @@ async fn run_command(
                 &input,
                 limit,
                 format,
-                binary_format,
+                render,
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
@@ -131,7 +137,7 @@ async fn run_command(
                 &input,
                 &indices,
                 format,
-                binary_format,
+                render,
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
@@ -156,7 +162,7 @@ async fn run_command(
                 limit,
                 seed,
                 format,
-                binary_format,
+                render,
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
@@ -195,7 +201,7 @@ async fn run_command(
             stats::run(
                 &input,
                 format,
-                binary_format,
+                render,
                 columns,
                 exclude,
                 filter.predicate.as_deref(),
@@ -207,31 +213,19 @@ async fn run_command(
             input,
             branch,
             tagged_only,
-        } => {
-            lance::versions::run(
-                &input,
-                branch.as_deref(),
-                tagged_only,
-                format,
-                binary_format,
-            )
-            .await
-        }
-        Command::Branches { input } => lance::branches::run(&input, format, binary_format).await,
-        Command::Tags { input } => lance::tags::run(&input, format, binary_format).await,
+        } => lance::versions::run(&input, branch.as_deref(), tagged_only, format, render).await,
+        Command::Branches { input } => lance::branches::run(&input, format, render).await,
+        Command::Tags { input } => lance::tags::run(&input, format, render).await,
         Command::Indices {
             input,
             lance: lance_args,
-        } => lance::indices::run(&input, &lance_args, format, binary_format).await,
+        } => lance::indices::run(&input, &lance_args, format, render).await,
         Command::Fragments {
             input,
             verbose,
             no_size,
             lance: lance_args,
-        } => {
-            lance::fragments::run(&input, &lance_args, verbose, no_size, format, binary_format)
-                .await
-        }
+        } => lance::fragments::run(&input, &lance_args, verbose, no_size, format, render).await,
         Command::Search {
             input,
             column,
@@ -256,7 +250,7 @@ async fn run_command(
                 nprobes.map(|n| n as usize),
                 refine_factor,
                 format,
-                binary_format,
+                render,
                 columns,
                 exclude,
                 &lance,

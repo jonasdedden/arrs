@@ -97,11 +97,21 @@ denied) are surfaced with the offending URI and the underlying cause.
 
 | Flag                        | Default | Purpose                                                     |
 |-----------------------------|---------|-------------------------------------------------------------|
-| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`/`stat`, `jsonl` everywhere else. |
+| `--format <csv\|jsonl\|json\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`/`stat`, `jsonl` everywhere else. `json` emits a single streamed JSON array. |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
+| `--max-list-items <N>`      | –       | Truncate lists / large-lists / fixed-size-lists to the first `N` elements, appending a `… (K more)` marker element (per nesting level). `jsonl`/`json` and nested table cells. Lossy. |
+| `--max-cell-width <N>`      | –       | `table` only: truncate each rendered cell to at most `N` characters, ending in `…`. Counts characters, never splits a UTF-8 codepoint. Lossy. |
+| `--float-precision <N>`     | –       | Render `f16`/`f32`/`f64` with exactly `N` fractional digits in every format (`NaN`/`Infinity` unaffected). Lossy. |
 | `--columns <a,b,…>`         | –       | Comma-separated include list. Supports glob patterns and nested paths (see below). User order is preserved. |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Supports the same patterns/paths. Takes precedence over `--columns`.|
 | `--where <predicate>`       | –       | Keep only rows matching a SQL-style predicate. Supported by `cat`, `head`, `tail`, `rowcount`, `sample`, `stats`, `freq`. See below. |
+
+The output-control flags (`--max-list-items`, `--max-cell-width`,
+`--float-precision`) affect **rendering only**. Truncated or rounded output is
+lossy and is not meant for round-tripping — in particular it is not a
+CSV-parse-ability guarantee, and nested types remain rejected by CSV regardless.
+List truncation appends a literal string element `… (K more)` (e.g.
+`… (1532 more)`), which keeps `jsonl`/`json` arrays valid JSON.
 
 ## Examples
 
@@ -126,6 +136,19 @@ arrs freq --column label dataset.lance
 
 # Concatenate two partitions (must share the same schema) and keep two columns.
 arrs cat --columns id,score part_a.lance part_b.lance
+
+# Tame wide embedding columns: show only the first 4 elements of each list.
+arrs head --max-list-items 4 dataset.lance
+# {"id":1,"emb":[0.12,0.98,0.33,0.41,"… (1532 more)"]}
+
+# Keep a table readable: cap every cell at 40 characters.
+arrs head --format table --max-cell-width 40 dataset.lance
+
+# Round floats to 3 fractional digits (works in every format).
+arrs head --float-precision 3 dataset.lance
+
+# Emit one streamed JSON array (for tools that can't read JSONL) and pipe to jq.
+arrs cat --format json dataset.lance | jq '.[].id'
 
 # Inspect schemas.
 arrs schema dataset.lance                 # arrow (logical)
@@ -642,12 +665,36 @@ preserved and duplicates are emitted as-is.
 - Lists → JSON arrays; structs → JSON objects; maps → JSON objects with
   stringified keys.
 
+**JSON** (`--format json`)
+- A single well-formed JSON array of the same objects `jsonl` would emit:
+  `[{…},{…},…]`. Empty input yields `[]`.
+- Streamed with constant memory (one object materialized at a time), so it is
+  safe on large datasets — just not line-oriented like `jsonl`.
+- Parses directly with `jq .`.
+
 **CSV**
 - First line is a header row: `col1,col2,col3`. Column names
   containing `,`, newlines, or quotes are quoted per RFC 4180.
 - Nulls emit as empty cells; `NaN` / `inf` / `-inf` for floats.
 - Nested types (list, struct, map, duration, interval) are rejected, use
-  JSONL for those.
+  JSONL for those. `--max-list-items` does not change this — CSV rejects nested
+  columns regardless.
+
+**Output-control flags** (`--max-list-items`, `--max-cell-width`,
+`--float-precision`)
+- Purely cosmetic and **lossy**: they change how values are rendered, never the
+  data. Do not use truncated/rounded output for round-tripping.
+- `--max-list-items N`: after `N` elements, a list gets a trailing string
+  element `… (K more)` where `K` is how many were dropped. Applied at every
+  nesting level independently, and to `FixedSizeList` embedding columns. Because
+  the marker is a JSON string, `jsonl`/`json` arrays stay valid JSON.
+- `--max-cell-width N` (table only): each rendered cell is cut to at most `N`
+  characters, ending in `…`. Character-based (never splits a multi-byte
+  codepoint); CJK/full-width display columns are counted as one each.
+- `--float-precision N`: `f16`/`f32`/`f64` render with exactly `N` fractional
+  digits (`format!`-style round-half-to-even); `NaN`/`Infinity` are untouched.
+  In `stats`, this applies to the numeric `mean`/`stddev` columns (`min`/`max`
+  are pre-rendered strings and unaffected).
 
 **Table**
 - Pretty Unicode borders on a TTY, ASCII grid when piped (so

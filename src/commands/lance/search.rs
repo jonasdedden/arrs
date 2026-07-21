@@ -5,10 +5,11 @@ use futures::StreamExt;
 use lance_index::vector::DIST_COL;
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Format, LanceArgs};
+use crate::cli::{Format, LanceArgs};
 use crate::commands::common::make_stdout_writer;
 use crate::dataset::{self, VectorSearchParams};
 use crate::error::Error;
+use crate::output::RenderOptions;
 use crate::projection;
 
 /// Where the query vector comes from. Exactly one is set (enforced by clap's
@@ -29,7 +30,7 @@ pub async fn run(
     nprobes: Option<usize>,
     refine_factor: Option<u32>,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
     lance: &LanceArgs,
@@ -71,7 +72,7 @@ pub async fn run(
         );
     }
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&result.schema)?;
     let mut stream = result.stream;
     while let Some(batch) = stream.next().await {
