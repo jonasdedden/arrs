@@ -31,17 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--columns`/`--exclude-columns`, composes with `--where`, and renders in
   `table`/`jsonl`/`csv`. A default-`None` `Dataset::stats` trait hook leaves the
   door open for backends to answer from metadata instead of scanning. (#8)
-- `stat` command (Lance only): a one-screen, metadata-only dataset health
-  summary — path, manifest version, live/deleted rows (with ratio), columns,
-  fragment count with min/max/median row spread, on-disk data size, and
-  version/branch/tag/index counts. Runs the underlying lookups concurrently and
-  makes no data scan, so it stays instant on large datasets. Respects
-  `--branch`/`--version`/`--tag`, has a `--no-size` escape hatch, and appends a
-  conservative plain-language compaction hint when fragment/deletion thresholds
-  are crossed. `--format jsonl` emits a single stable-schema object with raw
-  numbers for scripting; `table`/`csv` render a two-column key/value view. Named
-  as the singular of the per-column `stats` command (the `stat(1)` analogy);
-  `--help` cross-references the two. (#20)
 - `index-stats` command reporting per-index coverage — `indexed_rows`,
   `unindexed_rows`, and a `coverage` percentage — which diverge as rows are
   appended after an index is built. `--format jsonl` adds a `detail` column
@@ -67,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dotted-named columns (matching Lance's scanner) across `head`/`cat`/`take`/
   `sample`/`tail`/`schema`; excluding a nested path prunes that leaf and flattens
   the struct's surviving leaves. (#10)
+- `stat` command (Lance only): a one-screen, metadata-only dataset health
+  summary — path, manifest version, live/deleted rows (with ratio), columns,
+  fragment count with min/max/median row spread, on-disk data size, and
+  version/branch/tag/index counts. Runs the underlying lookups concurrently and
+  makes no data scan, so it stays instant on large datasets. Respects
+  `--branch`/`--version`/`--tag`, has a `--no-size` escape hatch, and appends a
+  conservative plain-language compaction hint when fragment/deletion thresholds
+  are crossed. `--format jsonl` emits a single stable-schema object with raw
+  numbers for scripting; `table`/`csv` render a two-column key/value view. Named
+  as the singular of the per-column `stats` command (the `stat(1)` analogy);
+  `--help` cross-references the two. (#20)
 
 ### Changed
 

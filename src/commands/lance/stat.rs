@@ -150,8 +150,17 @@ fn build_stat(
         )
     };
 
-    // Sizes are only present when they were requested; sum what's available.
-    let data_size_bytes = with_size.then(|| fragments.iter().filter_map(|f| f.size).sum());
+    // Invariant: when `with_size` is set, `list_fragments(true)` populates
+    // `size` for every fragment, so `filter_map` drops nothing and the sum is
+    // complete. The debug assertion keeps a silent under-sum from creeping in
+    // if that invariant ever breaks.
+    let data_size_bytes = with_size.then(|| {
+        debug_assert!(
+            fragments.iter().all(|f| f.size.is_some()),
+            "list_fragments(true) returned a fragment without a size"
+        );
+        fragments.iter().filter_map(|f| f.size).sum()
+    });
 
     let latest_version_timestamp = versions
         .iter()
