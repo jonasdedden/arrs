@@ -320,6 +320,21 @@ fn projection_and_filter_respected() {
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].column, "score");
 
+        // Projection order (non-schema order) is preserved in the output rows.
+        let reordered = vec!["score".to_string(), "id".to_string()];
+        let stats = stats::compute(ds.as_ref(), Some(&reordered), None)
+            .await
+            .unwrap();
+        let names: Vec<&str> = stats.iter().map(|s| s.column.as_str()).collect();
+        assert_eq!(names, vec!["score", "id"]);
+
+        // An unknown projected column is a caller error, not a panic.
+        let bogus = vec!["nope".to_string()];
+        let err = stats::compute(ds.as_ref(), Some(&bogus), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, arrs::error::Error::UnknownColumn { .. }));
+
         // Filter: id > 2 keeps rows (3, 4, 5) → score values {30, null, 40}.
         let stats = stats::compute(ds.as_ref(), None, Some("id > 2"))
             .await

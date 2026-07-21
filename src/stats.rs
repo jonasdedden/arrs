@@ -43,6 +43,7 @@ use futures::StreamExt as _;
 use crate::Result;
 use crate::cli::BinaryFormat;
 use crate::dataset::{ColumnStats, Dataset, ScanOptions};
+use crate::error::Error;
 use crate::output::value::table_cell;
 
 /// Maximum number of distinct values tracked exactly per column. Once a column
@@ -70,7 +71,7 @@ pub async fn compute(
 
     // Build one accumulator per projected column, up front, so that an empty
     // dataset (or a fully filtered-out one) still yields a row per column.
-    let projected_schema = projected_schema(ds.arrow_schema().as_ref(), projection);
+    let projected_schema = projected_schema(ds.arrow_schema().as_ref(), projection)?;
     let mut accs: Vec<Accumulator> = projected_schema
         .fields()
         .iter()
@@ -80,6 +81,23 @@ pub async fn compute(
     let mut stream = ds.scan(&options).await?;
     while let Some(batch) = stream.next().await {
         let batch = batch?;
+        // Accumulators are indexed positionally, so the scan must yield columns
+        // in the projected order. Guard that invariant in debug builds: a future
+        // backend that reorders projected columns would otherwise silently
+        // misattribute statistics.
+        debug_assert!(
+            accs.iter()
+                .zip(batch.schema().fields())
+                .all(|(acc, field)| acc.name == *field.name()),
+            "scan batch columns are not in projected order: expected {:?}, got {:?}",
+            accs.iter().map(|a| &a.name).collect::<Vec<_>>(),
+            batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name())
+                .collect::<Vec<_>>(),
+        );
         for (idx, acc) in accs.iter_mut().enumerate() {
             acc.update(batch.column(idx).as_ref());
         }
@@ -90,20 +108,30 @@ pub async fn compute(
 
 /// The input schema projected to `columns` (all columns when `None`), used to
 /// seed one accumulator per column before any batch is read.
-fn projected_schema(schema: &Schema, columns: Option<&[String]>) -> SchemaRef {
+///
+/// `compute` is public, so an unknown column name is a caller error rather than
+/// a validated precondition: it returns [`Error::UnknownColumn`] instead of
+/// panicking. (The CLI still validates up front via `projection::resolve`.)
+fn projected_schema(schema: &Schema, columns: Option<&[String]>) -> Result<SchemaRef> {
     match columns {
-        None => Arc::new(schema.clone()),
+        None => Ok(Arc::new(schema.clone())),
         Some(cols) => {
-            let fields: Vec<_> = cols
-                .iter()
-                .map(|n| {
-                    schema
-                        .field_with_name(n)
-                        .expect("projection validated against schema")
-                        .clone()
-                })
-                .collect();
-            Arc::new(Schema::new(fields))
+            let mut fields = Vec::with_capacity(cols.len());
+            for name in cols {
+                let field = schema
+                    .field_with_name(name)
+                    .map_err(|_| Error::UnknownColumn {
+                        name: name.clone(),
+                        available: schema
+                            .fields()
+                            .iter()
+                            .map(|f| f.name().as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    })?;
+                fields.push(field.clone());
+            }
+            Ok(Arc::new(Schema::new(fields)))
         }
     }
 }
@@ -477,6 +505,9 @@ impl Moments {
     }
 
     /// Sample standard deviation (ddof = 1). Undefined for fewer than two values.
+    ///
+    /// Values are accumulated in `f64`, so for integer magnitudes near `2^63`
+    /// the result is f64-precision-limited (the same limitation as numpy).
     fn stddev(&self) -> Option<f64> {
         (self.count >= 2).then(|| (self.m2 / (self.count as f64 - 1.0)).sqrt())
     }
