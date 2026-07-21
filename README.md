@@ -194,22 +194,41 @@ instead. Invalid predicates surface the backend's parse error as
 ### Lance versioning, branches and tags
 
 Lance datasets carry a per-branch linear version history; tags are named
-references to specific `(branch, version)` pairs. Three flags select which
+references to specific `(branch, version)` pairs. Four flags select which
 state to read from:
 
-| Flag              | Meaning                                                          |
-|-------------------|------------------------------------------------------------------|
-| `--branch <name>` | Read from the named branch (default: `main`).                    |
-| `--version <N>`   | Read version `N` on the chosen branch. (default: latest version) |
-| `--tag <name>`    | Read the tagged `(branch, version)`                              |
+| Flag                | Meaning                                                                       |
+|---------------------|-------------------------------------------------------------------------------|
+| `--branch <name>`   | Read from the named branch (default: `main`).                                 |
+| `--version <N>`     | Read version `N` on the chosen branch. (default: latest version)              |
+| `--tag <name>`      | Read the tagged `(branch, version)`                                           |
+| `--as-of <instant>` | Read the latest version whose commit timestamp is at or before `<instant>`.   |
 
-`--version` and `--tag` are mutually exclusive. 
+`--version`, `--tag`, and `--as-of` all name a single version and are therefore
+mutually exclusive; each combines with `--branch`.
+
+`--as-of` accepts three timestamp formats:
+
+- RFC 3339 with an offset — `2026-07-01T12:00:00Z`, `2026-07-01T14:00:00+02:00`.
+- A naive datetime with no offset — `2026-07-01T12:00:00` — **interpreted as
+  UTC**, never local time, so results are reproducible on any machine.
+- A date with no time — `2026-07-01` — interpreted as **midnight UTC**.
+
+The resolved version is echoed on stderr
+(`resolved --as-of to version 7 (2026-07-01T11:48:02Z)`) so results stay
+reproducible. If the instant predates the branch's first version, the error
+reports the earliest valid timestamp.
 
 ```sh
 # Inspect a previous snapshot.
 arrs head -n 5 --version 3 dataset.lance
 arrs rowcount --tag release-2026-04 dataset.lance
 arrs cat --branch dev --columns id,score dataset.lance
+
+# Time travel by timestamp: "what did this look like then?"
+arrs head -n 5 --as-of "2026-07-01T12:00:00Z" dataset.lance
+arrs rowcount --as-of 2026-07-01 dataset.lance          # date-only → midnight UTC
+arrs schema --branch dev --as-of "2026-06-15T09:30" dataset.lance
 
 # List metadata.
 arrs versions dataset.lance                       # every version on main

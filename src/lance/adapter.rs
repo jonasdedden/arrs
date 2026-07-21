@@ -7,7 +7,7 @@ use arrow_array::RecordBatch;
 use arrow_array::RecordBatchReader;
 use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use futures::{StreamExt, TryStreamExt};
 use lance::Dataset as InnerLance;
 use lance::dataset::ProjectionRequest;
@@ -170,7 +170,91 @@ async fn apply_checkout(mut ds: InnerLance, lance: Option<&LanceArgs>) -> Result
             .await
             .map_err(|e| Error::Lance(Box::new(e)))?;
     }
+    // `--as-of` conflicts with `--version`/`--tag` at the clap layer, so it is
+    // only ever reached after (an optional) branch checkout.
+    if let Some(as_of) = &args.as_of {
+        let target = parse_as_of(as_of)?;
+        ds = checkout_as_of(ds, target).await?;
+    }
     Ok(ds)
+}
+
+/// Resolve `--as-of` against the (already branch-scoped) dataset: pick the
+/// latest version whose commit timestamp is `<= target`, echo it on stderr for
+/// reproducibility, and check that version out. Versions are returned in
+/// ascending order, so a reverse scan finds the newest match first.
+async fn checkout_as_of(ds: InnerLance, target: DateTime<Utc>) -> Result<InnerLance> {
+    let versions = ds.versions().await.map_err(|e| Error::Lance(Box::new(e)))?;
+    match versions.iter().rev().find(|v| v.timestamp <= target) {
+        Some(chosen) => {
+            eprintln!(
+                "resolved --as-of to version {} ({})",
+                chosen.version,
+                chosen.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true)
+            );
+            ds.checkout_version(chosen.version)
+                .await
+                .map_err(|e| Error::Lance(Box::new(e)))
+        }
+        None => {
+            // Every version is newer than `target`: the instant predates the
+            // branch's history. Surface the earliest timestamp so the user
+            // knows the valid range.
+            let earliest = versions
+                .first()
+                .map(|v| v.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true))
+                .unwrap_or_else(|| "<none>".to_string());
+            Err(Error::AsOfBeforeFirstVersion {
+                requested: target.to_rfc3339_opts(SecondsFormat::Secs, true),
+                earliest,
+            })
+        }
+    }
+}
+
+/// Parse an `--as-of` value into a UTC instant.
+///
+/// Three formats are accepted, tried in order:
+/// 1. RFC 3339 with an explicit offset (`2026-07-01T12:00:00Z`,
+///    `2026-07-01T14:00:00+02:00`) — the offset is honoured and normalised to
+///    UTC.
+/// 2. A naive datetime with no offset (`2026-07-01T12:00:00`,
+///    `2026-07-01T12:00`, or space-separated) — **interpreted as UTC**.
+/// 3. A date with no time (`2026-07-01`) — interpreted as **midnight UTC**.
+///
+/// The naive-timezone rule (UTC, never local) keeps results reproducible
+/// regardless of the machine running the CLI.
+fn parse_as_of(s: &str) -> Result<DateTime<Utc>> {
+    let s = s.trim();
+
+    // 1. RFC 3339 with an explicit offset.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    // 2. Naive datetime (no offset), a few common spellings; interpreted as UTC.
+    const NAIVE_DATETIME_FORMATS: &[&str] = &[
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ];
+    for fmt in NAIVE_DATETIME_FORMATS {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(s, fmt) {
+            return Ok(Utc.from_utc_datetime(&naive));
+        }
+    }
+
+    // 3. Date only → midnight UTC.
+    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        // `and_hms_opt(0, 0, 0)` on a valid date is always in range.
+        let naive = date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is a valid time for any date");
+        return Ok(Utc.from_utc_datetime(&naive));
+    }
+
+    Err(Error::InvalidAsOf(s.to_string()))
 }
 
 #[async_trait]
@@ -711,4 +795,97 @@ where
         .await
         .map_err(|e| Error::Lance(Box::new(e)))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shorthand: build the expected UTC instant from components.
+    fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, mo, d, h, mi, s).unwrap()
+    }
+
+    #[test]
+    fn parses_rfc3339_zulu() {
+        assert_eq!(
+            parse_as_of("2026-07-01T12:00:00Z").unwrap(),
+            utc(2026, 7, 1, 12, 0, 0)
+        );
+    }
+
+    #[test]
+    fn parses_rfc3339_offset_normalises_to_utc() {
+        // 14:00 at +02:00 is 12:00 UTC.
+        assert_eq!(
+            parse_as_of("2026-07-01T14:00:00+02:00").unwrap(),
+            utc(2026, 7, 1, 12, 0, 0)
+        );
+    }
+
+    #[test]
+    fn parses_rfc3339_with_fractional_seconds() {
+        assert_eq!(
+            parse_as_of("2026-07-01T12:00:00.500Z").unwrap(),
+            utc(2026, 7, 1, 12, 0, 0) + chrono::Duration::milliseconds(500)
+        );
+    }
+
+    #[test]
+    fn parses_naive_datetime_as_utc() {
+        assert_eq!(
+            parse_as_of("2026-07-01T12:00:00").unwrap(),
+            utc(2026, 7, 1, 12, 0, 0)
+        );
+    }
+
+    #[test]
+    fn parses_naive_datetime_without_seconds() {
+        assert_eq!(
+            parse_as_of("2026-06-15T09:30").unwrap(),
+            utc(2026, 6, 15, 9, 30, 0)
+        );
+    }
+
+    #[test]
+    fn parses_space_separated_naive_datetime() {
+        assert_eq!(
+            parse_as_of("2026-07-01 12:00:00").unwrap(),
+            utc(2026, 7, 1, 12, 0, 0)
+        );
+    }
+
+    #[test]
+    fn parses_date_only_as_midnight_utc() {
+        assert_eq!(parse_as_of("2026-07-01").unwrap(), utc(2026, 7, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace() {
+        assert_eq!(
+            parse_as_of("  2026-07-01T12:00:00Z  ").unwrap(),
+            utc(2026, 7, 1, 12, 0, 0)
+        );
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(matches!(
+            parse_as_of("not-a-date"),
+            Err(Error::InvalidAsOf(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_impossible_date() {
+        assert!(matches!(
+            parse_as_of("2026-13-40"),
+            Err(Error::InvalidAsOf(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(matches!(parse_as_of(""), Err(Error::InvalidAsOf(_))));
+    }
 }

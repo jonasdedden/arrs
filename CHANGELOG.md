@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   appended after an index is built. `--format jsonl` adds a `detail` column
   carrying Lance's raw statistics JSON verbatim so type-specific internals
   (IVF partitions, PQ sub-vectors, …) pass through unmodified. (#17)
+- `--as-of <instant>` time travel by timestamp (Lance only): reads the latest
+  version whose commit timestamp is at or before the given instant on the chosen
+  branch. Accepts RFC 3339 with offset, a naive datetime (interpreted as UTC),
+  or a date (midnight UTC); mutually exclusive with `--version`/`--tag`, combines
+  with `--branch`; echoes the resolved version on stderr. (#18)
 
 ### Changed
 

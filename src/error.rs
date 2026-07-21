@@ -84,7 +84,7 @@ pub enum Error {
     #[error("unrecognised dataset format at {path}")]
     UnknownFormat { path: String },
 
-    #[error("--branch/--version/--tag are only valid for Lance datasets ({path})")]
+    #[error("--branch/--version/--tag/--as-of are only valid for Lance datasets ({path})")]
     LanceFlagsOnNonLance { path: String },
 
     #[error("'{command}' is only valid for Lance datasets ({path})")]
@@ -98,6 +98,16 @@ pub enum Error {
         tag_branch: String,
         requested_branch: String,
     },
+
+    #[error(
+        "could not parse --as-of value '{0}': expected RFC 3339 with offset (e.g. 2026-07-01T12:00:00Z), a naive datetime interpreted as UTC (e.g. 2026-07-01T12:00:00), or a date interpreted as midnight UTC (e.g. 2026-07-01)"
+    )]
+    InvalidAsOf(String),
+
+    #[error(
+        "--as-of {requested} predates the earliest version on this branch (earliest: {earliest}); pass a timestamp at or after it"
+    )]
+    AsOfBeforeFirstVersion { requested: String, earliest: String },
 
     #[error("--format is not applicable to '{command}' (it does not emit row-shaped output)")]
     FormatNotApplicable { command: &'static str },
