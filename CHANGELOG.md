@@ -9,15 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `diff` command (Lance only): compare two versions of one dataset and report
-  row deltas (added/deleted split from fragment metadata, not just net), schema
-  changes (columns added/removed/retyped), fragment changes (added/removed/
-  rewritten), index changes (created/dropped), and the version log of the
-  `(from, to]` range. Endpoints select by `--from`/`--to` version or
-  `--from-tag`/`--to-tag`, scoped with `--branch`; `--to` defaults to the branch
-  latest. Human-readable summary by default, `--format jsonl` for a single
-  machine-readable record. Exit codes follow `diff(1)`: `0` identical, `1`
-  different, `2` error. (#19)
 - `--where <predicate>` SQL-style predicate filtering for `cat`, `head`, `tail`,
   `rowcount`, and `sample`. The filter is applied before row selection, and
   filtered `rowcount` uses the backend's native filtered count (pushed into
@@ -76,6 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   numbers for scripting; `table`/`csv` render a two-column key/value view. Named
   as the singular of the per-column `stats` command (the `stat(1)` analogy);
   `--help` cross-references the two. (#20)
+- `diff` command (Lance only): compare two versions of one dataset and report
+  row deltas (added/deleted split from fragment metadata, not just net), schema
+  changes (columns added/removed/retyped), fragment changes (added/removed/
+  rewritten), index changes (created/dropped), and the version log of the
+  `(from, to]` range. Endpoints select by `--from`/`--to` version or
+  `--from-tag`/`--to-tag`, scoped with `--branch`; `--to` defaults to the branch
+  latest. Human-readable summary by default, `--format jsonl` for a single
+  machine-readable record. Exit codes follow `diff(1)`: `0` identical, `1`
+  different, `2` error. (#19)
 
 ### Changed
 

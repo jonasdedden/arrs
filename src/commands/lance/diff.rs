@@ -53,6 +53,7 @@ pub async fn run(input: &str, sel: DiffSelectors, format: Option<Format>) -> Res
         branch: sel.branch.clone(),
         version: sel.from_version,
         tag: sel.from_tag.clone(),
+        as_of: None,
     };
     let from_ds = dataset::open(input, Some(&from_args)).await?;
     let from_lance = from_ds.lance().ok_or_else(|| Error::NotLance {
@@ -66,6 +67,7 @@ pub async fn run(input: &str, sel: DiffSelectors, format: Option<Format>) -> Res
             branch: sel.branch.clone(),
             version: sel.to_version,
             tag: sel.to_tag.clone(),
+            as_of: None,
         }
     } else {
         // Default: latest of the same branch as `from`. Map the implicit main
@@ -75,6 +77,7 @@ pub async fn run(input: &str, sel: DiffSelectors, format: Option<Format>) -> Res
             branch,
             version: None,
             tag: None,
+            as_of: None,
         }
     };
     let to_ds = dataset::open(input, Some(&to_args)).await?;
@@ -693,6 +696,7 @@ mod tests {
         let idx = |name: &str| IndexInfo {
             name: name.to_string(),
             uuid: "u".to_string(),
+            index_type: "BTree".to_string(),
             columns: vec!["id".to_string()],
             dataset_version: 1,
             created_at: None,
