@@ -1,6 +1,6 @@
 //! Integration tests for Lance-specific features:
 //! - `versions` / `branches` / `indices` commands.
-//! - `--branch` / `--version` / `--tag` checkout flags.
+//! - `--branch` / `--version` / `--tag` / `--as-of` checkout flags.
 
 mod common;
 
@@ -890,13 +890,18 @@ fn as_of_before_first_version_errors_with_earliest() {
             .await
             .unwrap_err();
         match &err {
-            Error::AsOfBeforeFirstVersion { earliest, .. } => {
-                // The earliest valid timestamp is echoed so the user learns the
-                // valid range; it matches v1's commit time.
+            Error::AsOfBeforeFirstVersion {
+                earliest,
+                requested,
+            } => {
+                // The earliest valid timestamp is echoed at full (sub-second)
+                // precision so re-passing it resolves to v1, not before it.
                 assert_eq!(
                     earliest,
-                    &t1.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                    &t1.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
                 );
+                // `requested` echoes the user's raw input verbatim.
+                assert_eq!(requested, &before.to_rfc3339());
             }
             other => panic!("expected AsOfBeforeFirstVersion, got {other:?}"),
         }

@@ -174,23 +174,33 @@ async fn apply_checkout(mut ds: InnerLance, lance: Option<&LanceArgs>) -> Result
     // only ever reached after (an optional) branch checkout.
     if let Some(as_of) = &args.as_of {
         let target = parse_as_of(as_of)?;
-        ds = checkout_as_of(ds, target).await?;
+        ds = checkout_as_of(ds, target, as_of).await?;
     }
     Ok(ds)
+}
+
+/// Format an instant at full precision (sub-second digits when present) with a
+/// `Z` suffix. Commit timestamps carry nanoseconds, so seconds-truncation would
+/// make the echoed/advised value round *down* to a different (earlier) version;
+/// full precision keeps "paste this back" literally reproducible.
+fn format_instant(ts: DateTime<Utc>) -> String {
+    ts.to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
 /// Resolve `--as-of` against the (already branch-scoped) dataset: pick the
 /// latest version whose commit timestamp is `<= target`, echo it on stderr for
 /// reproducibility, and check that version out. Versions are returned in
-/// ascending order, so a reverse scan finds the newest match first.
-async fn checkout_as_of(ds: InnerLance, target: DateTime<Utc>) -> Result<InnerLance> {
+/// ascending order, so a reverse scan finds the newest match first. `raw` is
+/// the user's original input string, echoed verbatim in the out-of-range error
+/// so re-passing it is never a self-truncating suggestion.
+async fn checkout_as_of(ds: InnerLance, target: DateTime<Utc>, raw: &str) -> Result<InnerLance> {
     let versions = ds.versions().await.map_err(|e| Error::Lance(Box::new(e)))?;
     match versions.iter().rev().find(|v| v.timestamp <= target) {
         Some(chosen) => {
             eprintln!(
                 "resolved --as-of to version {} ({})",
                 chosen.version,
-                chosen.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true)
+                format_instant(chosen.timestamp)
             );
             ds.checkout_version(chosen.version)
                 .await
@@ -198,14 +208,14 @@ async fn checkout_as_of(ds: InnerLance, target: DateTime<Utc>) -> Result<InnerLa
         }
         None => {
             // Every version is newer than `target`: the instant predates the
-            // branch's history. Surface the earliest timestamp so the user
-            // knows the valid range.
+            // branch's history. Surface the earliest timestamp at full precision
+            // so a user who passes it verbatim lands on (not before) v1.
             let earliest = versions
                 .first()
-                .map(|v| v.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true))
+                .map(|v| format_instant(v.timestamp))
                 .unwrap_or_else(|| "<none>".to_string());
             Err(Error::AsOfBeforeFirstVersion {
-                requested: target.to_rfc3339_opts(SecondsFormat::Secs, true),
+                requested: raw.to_string(),
                 earliest,
             })
         }

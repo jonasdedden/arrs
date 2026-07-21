@@ -217,7 +217,10 @@ mutually exclusive; each combines with `--branch`.
 The resolved version is echoed on stderr
 (`resolved --as-of to version 7 (2026-07-01T11:48:02Z)`) so results stay
 reproducible. If the instant predates the branch's first version, the error
-reports the earliest valid timestamp.
+reports the earliest valid timestamp. On a non-default branch the timeline
+starts at the branch-creation version, so an instant before that (even if it
+falls after the parent commit the branch forked from) is out of range for that
+branch.
 
 ```sh
 # Inspect a previous snapshot.
