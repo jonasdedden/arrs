@@ -31,9 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--columns`/`--exclude-columns`, composes with `--where`, and renders in
   `table`/`jsonl`/`csv`. A default-`None` `Dataset::stats` trait hook leaves the
   door open for backends to answer from metadata instead of scanning. (#8)
+- `index-stats` command reporting per-index coverage — `indexed_rows`,
+  `unindexed_rows`, and a `coverage` percentage — which diverge as rows are
+  appended after an index is built. `--format jsonl` adds a `detail` column
+  carrying Lance's raw statistics JSON verbatim so type-specific internals
+  (IVF partitions, PQ sub-vectors, …) pass through unmodified. (#17)
 
 ### Changed
 
 - `Dataset::scan` now takes a `ScanOptions` struct (projection + filter) instead
   of a positional projection argument; `Dataset::count_rows` takes an optional
   filter. (#6)
+- `indices` output now includes an index `type` column (`BTree`, `IVF_PQ`,
+  `INVERTED`, …), sourced from Lance's index statistics. (#17)

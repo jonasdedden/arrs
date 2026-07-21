@@ -27,6 +27,7 @@ pub async fn run(
     let columns_field = Arc::new(Field::new("item", DataType::Utf8, true));
     let schema = Arc::new(Schema::new(vec![
         Field::new("name", DataType::Utf8, false),
+        Field::new("type", DataType::Utf8, false),
         Field::new("uuid", DataType::Utf8, false),
         Field::new("columns", DataType::List(columns_field), false),
         Field::new("dataset_version", DataType::UInt64, false),
@@ -39,6 +40,12 @@ pub async fn run(
 
     let name_col: Arc<dyn Array> = Arc::new(StringArray::from(
         indices.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+    ));
+    let type_col: Arc<dyn Array> = Arc::new(StringArray::from(
+        indices
+            .iter()
+            .map(|i| i.index_type.as_str())
+            .collect::<Vec<_>>(),
     ));
     let uuid_col: Arc<dyn Array> = Arc::new(StringArray::from(
         indices.iter().map(|i| i.uuid.as_str()).collect::<Vec<_>>(),
@@ -68,7 +75,14 @@ pub async fn run(
     );
     let batch = RecordBatch::try_new(
         schema.clone(),
-        vec![name_col, uuid_col, columns_col, version_col, created_at_col],
+        vec![
+            name_col,
+            type_col,
+            uuid_col,
+            columns_col,
+            version_col,
+            created_at_col,
+        ],
     )?;
 
     let mut writer = make_stdout_writer(format, binary_format);

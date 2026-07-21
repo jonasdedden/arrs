@@ -49,7 +49,8 @@ cargo run --release -- <command> [args…]
 | `versions` | (Lance) List versions of the dataset.                               |
 | `branches` | (Lance) List branches of the dataset.                               |
 | `tags`     | (Lance) List tags across every branch.                              |
-| `indices`  | (Lance) List indices defined on the dataset.                        |
+| `indices`  | (Lance) List indices defined on the dataset (name, type, columns, …).|
+| `index-stats` | (Lance) Per-index coverage: indexed vs unindexed row counts.     |
 | `fragments` | (Lance) List fragments with row, deletion, file, and size info.    |
 | `search`   | (Lance) Nearest-neighbor vector search; appends a `_distance` column.|
 
@@ -93,7 +94,7 @@ denied) are surfaced with the offending URI and the underlying cause.
 
 | Flag                        | Default | Purpose                                                     |
 |-----------------------------|---------|-------------------------------------------------------------|
-| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`fragments`/`stats`, `jsonl` everywhere else. |
+| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`, `jsonl` everywhere else. |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
 | `--columns <a,b,…>`         | –       | Comma-separated include list. User order is preserved.      |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Takes precedence over `--columns`.|
@@ -216,7 +217,39 @@ arrs versions --tagged-only dataset.lance         # only tagged versions
 arrs versions --branch dev dataset.lance          # every version on `dev`
 arrs branches dataset.lance
 arrs tags dataset.lance                           # cross-branch tag listing
-arrs indices dataset.lance
+arrs indices dataset.lance                        # name, type, columns, version, …
+arrs index-stats dataset.lance                    # per-index coverage
+```
+
+### Indices and coverage
+
+`indices` lists every index on the active version, including its **type** (the
+first thing you usually want — `BTree`, `IVF_PQ`, `INVERTED`, …):
+
+```sh
+$ arrs indices dataset.lance
+| name    | type   | uuid | columns   | dataset_version | created_at |
+| idx_id  | BTree  | …    | ["id"]    | 4               | …          |
+```
+
+Lance indices go stale as rows are appended after the index was built, so
+`index-stats` reports how many rows are actually covered:
+
+```sh
+$ arrs index-stats dataset.lance
+| name    | type   | indexed_rows | unindexed_rows | coverage |
+| idx_id  | BTree  | 980000       | 20000          | 98.0%    |
+```
+
+`coverage` is `indexed_rows / (indexed_rows + unindexed_rows)`, shown as a
+percentage (`n/a` for an empty index). In `--format jsonl` an extra `detail`
+column carries Lance's raw statistics JSON verbatim, so type-specific internals
+(IVF partition counts, PQ sub-vectors, per-delta row counts, …) pass straight
+through without arrs needing to understand every field:
+
+```sh
+$ arrs --format jsonl index-stats dataset.lance
+{"name":"idx_id","type":"BTree","indexed_rows":980000,"unindexed_rows":20000,"coverage":"98.0%","detail":"{\"index_type\":\"BTree\",\"num_indexed_rows\":980000,…}"}
 ```
 
 ### Fragments

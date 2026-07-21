@@ -257,4 +257,11 @@ pub enum Command {
         #[command(flatten)]
         lance: LanceArgs,
     },
+
+    /// (Lance only) Print per-index coverage: indexed vs unindexed row counts.
+    IndexStats {
+        input: String,
+        #[command(flatten)]
+        lance: LanceArgs,
+    },
 }

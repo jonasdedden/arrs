@@ -99,6 +99,12 @@ pub trait LanceCapabilities: Send + Sync {
     /// List indices defined on the active version of the dataset.
     async fn list_indices(&self) -> Result<Vec<IndexInfo>>;
 
+    /// Per-index coverage statistics: indexed vs unindexed row counts (which
+    /// diverge as rows are appended after an index is built), plus the raw
+    /// Lance statistics JSON so callers can pass through type-specific internals
+    /// (IVF partitions, PQ sub-vectors, …) without arrs understanding them.
+    async fn index_stats(&self) -> Result<Vec<IndexStats>>;
+
     /// List every tag in the dataset, regardless of branch.
     async fn list_tags(&self) -> Result<Vec<TagInfo>>;
 
@@ -170,6 +176,8 @@ pub struct BranchInfo {
 #[derive(Debug, Clone)]
 pub struct IndexInfo {
     pub name: String,
+    /// Index type as Lance reports it (e.g. `BTree`, `IVF_PQ`, `INVERTED`).
+    pub index_type: String,
     pub uuid: String,
     pub columns: Vec<String>,
     pub dataset_version: u64,
@@ -205,6 +213,30 @@ pub struct ColumnStats {
     /// Distinct-value count, either exact (e.g. `42`) or a capped marker
     /// (e.g. `>10000`) once cardinality exceeds the tracking cap.
     pub distinct: Option<String>,
+}
+
+/// One row in `arrs index-stats` output.
+#[derive(Debug, Clone)]
+pub struct IndexStats {
+    pub name: String,
+    /// Index type as Lance reports it (e.g. `BTree`, `IVF_PQ`).
+    pub index_type: String,
+    /// Rows currently covered by the index.
+    pub indexed_rows: u64,
+    /// Rows appended after the index was built and not yet reindexed.
+    pub unindexed_rows: u64,
+    /// Raw Lance statistics JSON string, passed through for type-specific
+    /// internals. Emitted verbatim in `jsonl` output; omitted from table/csv.
+    pub detail: String,
+}
+
+impl IndexStats {
+    /// Fraction of rows covered by the index in `0.0..=1.0`, or `None` when the
+    /// index has no rows at all (coverage is undefined).
+    pub fn coverage(&self) -> Option<f64> {
+        let total = self.indexed_rows + self.unindexed_rows;
+        (total > 0).then(|| self.indexed_rows as f64 / total as f64)
+    }
 }
 
 /// One row in `arrs tags` output.

@@ -17,8 +17,8 @@ use lance_index::vector::DIST_COL;
 use crate::Result;
 use crate::cli::LanceArgs;
 use crate::dataset::{
-    BatchStream, BranchInfo, Dataset, FragmentInfo, IndexInfo, LanceCapabilities, ScanOptions,
-    TagInfo, VectorSearchParams, VectorSearchResult, VersionInfo,
+    BatchStream, BranchInfo, Dataset, FragmentInfo, IndexInfo, IndexStats, LanceCapabilities,
+    ScanOptions, TagInfo, VectorSearchParams, VectorSearchResult, VersionInfo,
 };
 use crate::error::Error;
 
@@ -63,6 +63,20 @@ impl LanceDataset {
             Some(cols) => ProjectionRequest::from_columns(cols.iter(), self.inner.schema()),
             None => ProjectionRequest::from_schema(self.inner.schema().clone()),
         }
+    }
+
+    /// Fetch and parse the Lance statistics JSON for one index, returning both
+    /// the raw string (for pass-through) and the parsed value (for field
+    /// extraction). `index_statistics` is the stable public surface Lance
+    /// exposes for index type and coverage counts.
+    async fn load_index_statistics(&self, name: &str) -> Result<(String, serde_json::Value)> {
+        let raw = self
+            .inner
+            .index_statistics(name)
+            .await
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        let value = serde_json::from_str(&raw)?;
+        Ok((raw, value))
     }
 
     /// Parse `predicate` against the dataset schema without running a scan,
@@ -389,28 +403,37 @@ impl LanceCapabilities for LanceDataset {
             .map_err(|e| Error::Lance(Box::new(e)))?;
         let schema = self.inner.schema();
 
-        Ok(indices
-            .iter()
-            .map(|m| {
-                let columns = m
-                    .fields
-                    .iter()
-                    .map(|id| {
-                        schema
-                            .field_by_id(*id)
-                            .map(|f| f.name.clone())
-                            .unwrap_or_else(|| format!("<field_id={id}>"))
-                    })
-                    .collect();
-                IndexInfo {
-                    name: m.name.clone(),
-                    uuid: m.uuid.to_string(),
-                    columns,
-                    dataset_version: m.dataset_version,
-                    created_at: m.created_at,
-                }
-            })
-            .collect())
+        let mut out = Vec::with_capacity(indices.len());
+        for m in indices.iter() {
+            let columns = m
+                .fields
+                .iter()
+                .map(|id| {
+                    schema
+                        .field_by_id(*id)
+                        .map(|f| f.name.clone())
+                        .unwrap_or_else(|| format!("<field_id={id}>"))
+                })
+                .collect();
+            // The index type isn't on the loaded metadata; it lives in the
+            // statistics JSON. Index counts are small, so a call per index is
+            // fine (the issue explicitly sanctions this). A single index whose
+            // statistics can't be loaded must not fail the whole listing, so
+            // degrade that row to `UNKNOWN` rather than propagating the error.
+            let index_type = match self.load_index_statistics(&m.name).await {
+                Ok((_, stats)) => index_type_of(&stats),
+                Err(_) => "UNKNOWN".to_string(),
+            };
+            out.push(IndexInfo {
+                name: m.name.clone(),
+                index_type,
+                uuid: m.uuid.to_string(),
+                columns,
+                dataset_version: m.dataset_version,
+                created_at: m.created_at,
+            });
+        }
+        Ok(out)
     }
 
     async fn list_fragments(&self, with_size: bool) -> Result<Vec<FragmentInfo>> {
@@ -581,6 +604,33 @@ impl LanceCapabilities for LanceDataset {
             used_index,
         })
     }
+
+    async fn index_stats(&self) -> Result<Vec<IndexStats>> {
+        let indices = self
+            .inner
+            .load_indices()
+            .await
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+
+        let mut out = Vec::with_capacity(indices.len());
+        for m in indices.iter() {
+            let (raw, stats) = self.load_index_statistics(&m.name).await?;
+            out.push(IndexStats {
+                name: m.name.clone(),
+                index_type: index_type_of(&stats),
+                indexed_rows: stats
+                    .get("num_indexed_rows")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                unindexed_rows: stats
+                    .get("num_unindexed_rows")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                detail: raw,
+            });
+        }
+        Ok(out)
+    }
 }
 
 impl LanceDataset {
@@ -632,6 +682,16 @@ fn vector_column_dim(schema: &ArrowSchema, column: &str) -> Result<usize> {
             data_type: other.to_string(),
         }),
     }
+}
+
+/// Extract the `index_type` field from a Lance statistics JSON value, falling
+/// back to `UNKNOWN` when Lance omits it (e.g. an unrecognised system index).
+fn index_type_of(stats: &serde_json::Value) -> String {
+    stats
+        .get("index_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN")
+        .to_string()
 }
 
 fn unix_seconds_to_utc(seconds: u64) -> Option<DateTime<Utc>> {

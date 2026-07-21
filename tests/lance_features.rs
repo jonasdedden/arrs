@@ -515,6 +515,41 @@ fn list_indices_finds_btree_index() {
         assert_eq!(indices.len(), 1);
         assert_eq!(indices[0].name, "idx_id");
         assert_eq!(indices[0].columns, vec!["id".to_string()]);
+        // Increment 1: the index type is surfaced. A scalar BTree reports BTree.
+        assert_eq!(indices[0].index_type, "BTree");
+    });
+}
+
+#[test]
+fn index_stats_counts_change_when_rows_appended_after_indexing() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        // Build the BTree-indexed fixture, then append rows *after* the index
+        // exists so they land as unindexed.
+        let path = build_fixture_with_index(&tmp, "ds").await;
+        let mut ds = LanceInner::open(path.as_str()).await.unwrap();
+        let iter = RecordBatchIterator::new(vec![Ok(batch(vec![5, 6], vec!["e", "f"]))], schema());
+        ds.append(iter, None).await.unwrap();
+
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let stats = lance.index_stats().await.unwrap();
+        assert_eq!(stats.len(), 1);
+        let s = &stats[0];
+        assert_eq!(s.name, "idx_id");
+        assert_eq!(s.index_type, "BTree");
+        // The fixture indexed 4 rows; two more were appended post-indexing.
+        assert_eq!(s.indexed_rows, 4);
+        assert_eq!(s.unindexed_rows, 2);
+        // Coverage is 4 / 6 ≈ 0.667.
+        let coverage = s.coverage().expect("coverage defined for non-empty index");
+        assert!(
+            (coverage - 4.0 / 6.0).abs() < 1e-9,
+            "coverage was {coverage}"
+        );
+        // The raw statistics blob is passed through for jsonl consumers.
+        assert!(s.detail.contains("num_indexed_rows"));
     });
 }
 
@@ -617,6 +652,38 @@ fn list_fragments_respects_version_checkout() {
         let fragments = lance.list_fragments(false).await.unwrap();
         assert_eq!(fragments.len(), 1);
         assert_eq!(fragments[0].physical_rows, 2);
+    });
+}
+
+#[test]
+fn index_stats_empty_index_has_undefined_coverage() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = tmp.path().join("empty");
+        let uri = path.to_string_lossy().into_owned();
+
+        // A dataset with zero rows still accepts a scalar index.
+        let iter = RecordBatchIterator::new(vec![Ok(batch(Vec::new(), Vec::new()))], schema());
+        let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+        ds.create_index(
+            &["id"],
+            IndexType::BTree,
+            Some("idx_id".to_string()),
+            &ScalarIndexParams::default(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let ds = dataset::open(&uri, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let stats = lance.index_stats().await.unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].indexed_rows, 0);
+        assert_eq!(stats[0].unindexed_rows, 0);
+        // No rows → coverage is undefined (the `n/a` display branch).
+        assert!(stats[0].coverage().is_none());
     });
 }
 
