@@ -935,4 +935,34 @@ mod tests {
         // spam/ham/eggs + the NULL row.
         assert_eq!(batch.num_rows(), 4);
     }
+
+    #[test]
+    fn decimal_comparator_orders_numerically() {
+        use Ordering::{Equal, Greater, Less};
+        // Negatives: the value closer to zero is the larger number.
+        assert_eq!(cmp_decimal_str("-0.20", "-0.10"), Less);
+        assert_eq!(cmp_decimal_str("-0.10", "-0.20"), Greater);
+        // Sign dominates magnitude.
+        assert_eq!(cmp_decimal_str("-0.01", "0.00"), Less);
+        // Leading-zero magnitudes compare by value, not string length/lexically.
+        assert_eq!(cmp_decimal_str("9.00", "10.00"), Less);
+        assert_eq!(cmp_decimal_magnitude("9.00", "10.00"), Less);
+        // No-fraction integers.
+        assert_eq!(cmp_decimal_str("9", "10"), Less);
+        assert_eq!(cmp_decimal_str("10", "10"), Equal);
+        // Fraction padding: trailing zeros are value-neutral.
+        assert_eq!(cmp_frac_digits("5", "50"), Equal);
+        assert_eq!(cmp_frac_digits("5", "45"), Greater);
+        assert_eq!(cmp_decimal_str("1.5", "1.50"), Equal);
+        assert_eq!(cmp_decimal_str("1.5", "1.45"), Greater);
+        // Beyond f64 precision: only a non-float comparison can distinguish these.
+        assert_eq!(
+            cmp_decimal_str("-123456789012345678.91", "-123456789012345678.90"),
+            Less
+        );
+        assert_eq!(
+            cmp_decimal_str("123456789012345678.90", "123456789012345678.91"),
+            Less
+        );
+    }
 }
