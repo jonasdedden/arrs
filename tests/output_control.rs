@@ -10,6 +10,7 @@ use std::io::{Cursor, Write};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::{
     FixedSizeListArray, Float32Array, Float64Array, Int32Array, RecordBatch, StringArray,
 };
@@ -51,10 +52,18 @@ fn batch(n: usize) -> RecordBatch {
         Arc::new(Float32Array::from(vals)),
         None,
     );
-    let scores = Float64Array::from((0..n).map(|r| Some(0.123456 + r as f64)).collect::<Vec<_>>());
+    let scores = Float64Array::from(
+        (0..n)
+            .map(|r| Some(0.123456 + r as f64))
+            .collect::<Vec<_>>(),
+    );
     let text = StringArray::from(
         (0..n)
-            .map(|r| Some(format!("row-{r}-with-a-fairly-long-value-that-should-truncate")))
+            .map(|r| {
+                Some(format!(
+                    "row-{r}-with-a-fairly-long-value-that-should-truncate"
+                ))
+            })
             .collect::<Vec<_>>(),
     );
     RecordBatch::try_new(
@@ -109,6 +118,67 @@ fn default_float_matches_full_precision_string() {
     let jsonl = render(Format::Jsonl, opts(), &b);
     let v: Value = serde_json::from_str(jsonl.trim()).unwrap();
     assert_eq!(v["score"].as_f64().unwrap(), 0.123456);
+}
+
+/// Golden JSONL bytes under default options. Locks the exact serialization,
+/// including that an `f32` is widened to `f64` before rendering (so `0.1_f32`
+/// prints as its long widened form `0.10000000149011612`), an `f64` keeps its
+/// own shortest form (`0.2`), and a list renders in full with no marker.
+#[test]
+fn default_jsonl_line_is_byte_identical_golden() {
+    let s = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("a", DataType::Float32, false),
+        Field::new("b", DataType::Float64, false),
+        Field::new_list(
+            "tags",
+            Arc::new(Field::new("item", DataType::Utf8, true)),
+            false,
+        ),
+    ]));
+    let mut tags = ListBuilder::new(StringBuilder::new());
+    tags.values().append_value("x");
+    tags.values().append_value("y");
+    tags.append(true);
+    let b = RecordBatch::try_new(
+        s,
+        vec![
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Float32Array::from(vec![0.1_f32])),
+            Arc::new(Float64Array::from(vec![0.2_f64])),
+            Arc::new(tags.finish()),
+        ],
+    )
+    .unwrap();
+    let jsonl = render(Format::Jsonl, opts(), &b);
+    assert_eq!(
+        jsonl,
+        "{\"id\":1,\"a\":0.10000000149011612,\"b\":0.2,\"tags\":[\"x\",\"y\"]}\n"
+    );
+}
+
+/// Golden CSV bytes under default options. The same `f32`/`f64` values render
+/// with their *format-native* shortest forms here (`0.1` for the f32, unlike
+/// JSON's widened form), which is exactly the behavior the byte-identical
+/// default guarantee must pin.
+#[test]
+fn default_csv_lines_are_byte_identical_golden() {
+    let s = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("a", DataType::Float32, false),
+        Field::new("b", DataType::Float64, false),
+    ]));
+    let b = RecordBatch::try_new(
+        s,
+        vec![
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Float32Array::from(vec![0.1_f32])),
+            Arc::new(Float64Array::from(vec![0.2_f64])),
+        ],
+    )
+    .unwrap();
+    let csv = render(Format::Csv, opts(), &b);
+    assert_eq!(csv, "id,a,b\n1,0.1,0.2\n");
 }
 
 // ---------- --max-list-items ----------
@@ -178,7 +248,11 @@ fn float_precision_rounds_in_jsonl_and_stays_a_number() {
 #[test]
 fn float_precision_rounds_in_csv() {
     // CSV rejects nested columns, so use a flat score-only batch.
-    let s = Arc::new(Schema::new(vec![Field::new("score", DataType::Float64, false)]));
+    let s = Arc::new(Schema::new(vec![Field::new(
+        "score",
+        DataType::Float64,
+        false,
+    )]));
     let b = RecordBatch::try_new(s, vec![Arc::new(Float64Array::from(vec![0.123456]))]).unwrap();
     let o = RenderOptions {
         float_precision: Some(2),

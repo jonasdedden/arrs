@@ -100,7 +100,7 @@ denied) are surfaced with the offending URI and the underlying cause.
 | `--format <csv\|jsonl\|json\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`/`stat`, `jsonl` everywhere else. `json` emits a single streamed JSON array. |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
 | `--max-list-items <N>`      | –       | Truncate lists / large-lists / fixed-size-lists to the first `N` elements, appending a `… (K more)` marker element (per nesting level). `jsonl`/`json` and nested table cells. Lossy. |
-| `--max-cell-width <N>`      | –       | `table` only: truncate each rendered cell to at most `N` characters, ending in `…`. Counts characters, never splits a UTF-8 codepoint. Lossy. |
+| `--max-cell-width <N>`      | –       | `table` only: truncate each rendered data cell to at most `N` characters, ending in `…` (header cells are exempt). Counts characters, never splits a UTF-8 codepoint. Lossy. |
 | `--float-precision <N>`     | –       | Render `f16`/`f32`/`f64` with exactly `N` fractional digits in every format (`NaN`/`Infinity` unaffected). Lossy. |
 | `--columns <a,b,…>`         | –       | Comma-separated include list. Supports glob patterns and nested paths (see below). User order is preserved. |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Supports the same patterns/paths. Takes precedence over `--columns`.|
@@ -688,9 +688,11 @@ preserved and duplicates are emitted as-is.
   element `… (K more)` where `K` is how many were dropped. Applied at every
   nesting level independently, and to `FixedSizeList` embedding columns. Because
   the marker is a JSON string, `jsonl`/`json` arrays stay valid JSON.
-- `--max-cell-width N` (table only): each rendered cell is cut to at most `N`
-  characters, ending in `…`. Character-based (never splits a multi-byte
-  codepoint); CJK/full-width display columns are counted as one each.
+- `--max-cell-width N` (table only): each rendered data cell is cut to at most
+  `N` characters, ending in `…` (the `…` counts toward `N`, so `N = 0` collapses
+  a non-empty cell to a bare `…`). Header cells (column names) are never
+  truncated. Character-based (never splits a multi-byte codepoint); CJK/
+  full-width display columns are counted as one each.
 - `--float-precision N`: `f16`/`f32`/`f64` render with exactly `N` fractional
   digits (`format!`-style round-half-to-even); `NaN`/`Infinity` are untouched.
   In `stats`, this applies to the numeric `mean`/`stddev` columns (`min`/`max`

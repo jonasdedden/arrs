@@ -115,10 +115,11 @@ pub struct Cli {
     #[arg(long = "max-list-items", global = true, value_name = "N")]
     pub max_list_items: Option<usize>,
 
-    /// Table format only: truncate each rendered cell to at most N characters,
-    /// ending with `…` when shortened. Counts characters and never splits a
-    /// multi-byte UTF-8 codepoint (CJK display width is out of scope). Lossy.
-    /// Default: unlimited.
+    /// Table format only: truncate each rendered *data* cell to at most N
+    /// characters, ending with `…` when shortened. Header cells (column names)
+    /// are never truncated. Counts characters and never splits a multi-byte
+    /// UTF-8 codepoint (CJK display width is out of scope). `N = 0` renders every
+    /// non-empty cell as a bare `…`. Lossy. Default: unlimited.
     #[arg(long = "max-cell-width", global = true, value_name = "N")]
     pub max_cell_width: Option<usize>,
 

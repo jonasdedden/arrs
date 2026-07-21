@@ -41,7 +41,9 @@ impl<W: Write> TableRowWriter<W> {
 
 /// Truncate a rendered cell to at most `max` characters, replacing the tail
 /// with `…` when shortened. Character-based (never splits a multi-byte UTF-8
-/// codepoint); the marker itself counts as one of the `max` characters.
+/// codepoint); the marker itself counts as one of the `max` characters, so
+/// `max == 0` collapses any non-empty cell to a bare `…`. Applied only to data
+/// cells — header cells (column names) are never truncated.
 fn truncate_cell(s: String, max: usize) -> String {
     if s.chars().count() <= max {
         return s;
