@@ -5,6 +5,7 @@ mod lance;
 mod rowcount;
 mod sample;
 mod schema;
+mod stats;
 mod tail;
 mod take;
 
@@ -121,6 +122,22 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Schema { input, ty, lance } => {
             schema::run(&input, ty, columns, exclude, &lance).await
         }
+        Command::Stats {
+            input,
+            filter,
+            lance,
+        } => {
+            stats::run(
+                &input,
+                format,
+                binary_format,
+                columns,
+                exclude,
+                filter.predicate.as_deref(),
+                &lance,
+            )
+            .await
+        }
         Command::Versions {
             input,
             branch,
@@ -185,7 +202,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 }
 
 /// Apply the per-command default when `--format` was not given on the CLI.
-/// Metadata commands (versions/branches/tags/indices/fragments) default to
+/// Metadata commands (versions/branches/tags/indices/fragments/stats) default to
 /// `Table`; everything else defaults to `Jsonl`.
 fn resolve_format(explicit: Option<Format>, cmd: &Command) -> Format {
     if let Some(f) = explicit {
@@ -196,7 +213,8 @@ fn resolve_format(explicit: Option<Format>, cmd: &Command) -> Format {
         | Command::Branches { .. }
         | Command::Tags { .. }
         | Command::Indices { .. }
-        | Command::Fragments { .. } => Format::Table,
+        | Command::Fragments { .. }
+        | Command::Stats { .. } => Format::Table,
         _ => Format::Jsonl,
     }
 }

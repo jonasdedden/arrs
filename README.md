@@ -44,6 +44,7 @@ cargo run --release -- <command> [args…]
 | `take`     | Print specific rows by index (see grammar below).                   |
 | `rowcount` | Print the number of rows.                                           |
 | `sample`   | Print `N` random rows, no replacement. `--seed` for reproducibility.|
+| `stats`    | Per-column summary statistics (a `df.describe()` for datasets).     |
 | `schema`   | Print the logical (Arrow) or physical (Lance-native) schema.        |
 | `versions` | (Lance) List versions of the dataset.                               |
 | `branches` | (Lance) List branches of the dataset.                               |
@@ -92,11 +93,11 @@ denied) are surfaced with the offending URI and the underlying cause.
 
 | Flag                        | Default | Purpose                                                     |
 |-----------------------------|---------|-------------------------------------------------------------|
-| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`fragments`, `jsonl` everywhere else. |
+| `--format <csv\|jsonl\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`fragments`/`stats`, `jsonl` everywhere else. |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
 | `--columns <a,b,…>`         | –       | Comma-separated include list. User order is preserved.      |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Takes precedence over `--columns`.|
-| `--where <predicate>`       | –       | Keep only rows matching a SQL-style predicate. Supported by `cat`, `head`, `tail`, `rowcount`, `sample`. See below. |
+| `--where <predicate>`       | –       | Keep only rows matching a SQL-style predicate. Supported by `cat`, `head`, `tail`, `rowcount`, `sample`, `stats`. See below. |
 
 ## Examples
 
@@ -122,14 +123,41 @@ arrs cat --columns id,score part_a.lance part_b.lance
 # Inspect schemas.
 arrs schema dataset.lance                 # arrow (logical)
 arrs schema --type physical dataset.lance # lance-native (field ids, encoding…)
+
+# Per-column summary statistics (like df.describe()).
+arrs stats dataset.lance
+arrs stats --columns score,label dataset.lance    # only these columns
+arrs stats --where "split = 'test'" dataset.lance # over a filtered subset
+arrs stats --format jsonl dataset.lance           # machine-readable
 ```
+
+### Per-column statistics with `stats`
+
+`arrs stats` streams the dataset once and prints one row per column, with memory
+independent of the row count. It is the shell equivalent of `df.describe()`:
+
+| Field       | Meaning                                                             |
+|-------------|--------------------------------------------------------------------|
+| `column`    | Column name.                                                       |
+| `type`      | Arrow data type.                                                   |
+| `count`     | Number of non-null values.                                         |
+| `nulls`     | Number of null values (`count + nulls` = rows considered).         |
+| `min`/`max` | Numeric, temporal, string, and boolean columns (strings compare lexicographically). |
+| `mean`/`stddev` | Numeric columns only. `stddev` is the sample standard deviation (ddof = 1). |
+| `distinct`  | Distinct-value count, exact up to a cap (10 000) then reported as `>10000`. |
+
+Nested, binary, decimal, and dictionary columns report only `count`/`nulls`
+(never an error). A column containing any `NaN` reports `NaN` for `mean`/`stddev`,
+while `min`/`max` ignore `NaN` and report the real numeric range. `stats`
+respects `--columns`/`--exclude-columns` and `--where`, and honours `--format`
+(`table` by default, plus `jsonl`/`csv`).
 
 ### Filtering rows with `--where`
 
 `--where` takes a SQL-style predicate (parsed by the backend — DataFusion SQL
 for Lance) and keeps only the rows that match. It is available on `cat`,
-`head`, `tail`, `sample`, and `rowcount` (but not `take`, which addresses rows
-positionally — see below):
+`head`, `tail`, `sample`, `rowcount`, and `stats` (but not `take`, which
+addresses rows positionally — see below):
 
 | Command    | With `--where`                                                   |
 |------------|------------------------------------------------------------------|
@@ -138,6 +166,7 @@ positionally — see below):
 | `tail`     | Print the last `N` *matching* rows.                              |
 | `rowcount` | Count matching rows (pushed into scalar indices when available). |
 | `sample`   | Randomly sample `N` of the *matching* rows.                      |
+| `stats`    | Compute statistics over only the *matching* rows.                |
 
 The filter is applied **before** row selection, so `head`/`tail`/`sample`
 operate on the matching rows rather than filtering a positional slice.

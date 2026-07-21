@@ -164,6 +164,20 @@ pub enum Command {
         lance: LanceArgs,
     },
 
+    /// Print per-column summary statistics (like `df.describe()`).
+    ///
+    /// One row per column: count (non-null), nulls, min/max (numeric, temporal,
+    /// string, boolean), mean/stddev (numeric only), and an approximate distinct
+    /// count (exact up to a cap, then reported as `>N`). Nested/binary/decimal
+    /// columns report count and nulls only.
+    Stats {
+        input: PathBuf,
+        #[command(flatten)]
+        filter: FilterArg,
+        #[command(flatten)]
+        lance: LanceArgs,
+    },
+
     /// Print the schema of the dataset.
     Schema {
         input: String,
