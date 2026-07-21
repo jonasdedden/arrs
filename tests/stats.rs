@@ -7,7 +7,6 @@
 mod common;
 
 use std::io::Cursor;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_array::{Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
@@ -40,7 +39,7 @@ fn col<'a>(stats: &'a [ColumnStats], name: &str) -> &'a ColumnStats {
 }
 
 /// Compute stats for the dataset at `path` (all columns, no filter).
-async fn compute_all(path: &std::path::Path) -> Vec<ColumnStats> {
+async fn compute_all(path: &str) -> Vec<ColumnStats> {
     let ds = dataset::open(path, None).await.unwrap();
     stats::compute(ds.as_ref(), None, None).await.unwrap()
 }
@@ -72,7 +71,7 @@ fn mixed_batch() -> RecordBatch {
 
 /// Write `batches` to a fresh Lance dataset — first batch is the initial write,
 /// the rest are appends (each becomes a separate fragment / scan batch).
-async fn write_fragments(tmp: &TempDir, name: &str, batches: Vec<RecordBatch>) -> PathBuf {
+async fn write_fragments(tmp: &TempDir, name: &str, batches: Vec<RecordBatch>) -> String {
     let path = tmp.path().join(name);
     let uri = path.to_string_lossy().into_owned();
     let schema = batches[0].schema();
@@ -84,7 +83,7 @@ async fn write_fragments(tmp: &TempDir, name: &str, batches: Vec<RecordBatch>) -
         let iter = RecordBatchIterator::new(vec![Ok(b)], schema.clone());
         ds.append(iter, None).await.unwrap();
     }
-    path
+    uri
 }
 
 #[test]
@@ -261,7 +260,7 @@ fn nested_and_binary_columns_report_count_nulls_only() {
     runtime().block_on(async {
         let tmp = tempdir();
         let path = write_full(&tmp, "full").await;
-        let stats = compute_all(&path).await;
+        let stats = compute_all(path.to_str().unwrap()).await;
 
         // Binary column: count/nulls only.
         let data = col(&stats, "data");

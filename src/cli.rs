@@ -171,7 +171,7 @@ pub enum Command {
     /// count (exact up to a cap, then reported as `>N`). Nested/binary/decimal
     /// columns report count and nulls only.
     Stats {
-        input: PathBuf,
+        input: String,
         #[command(flatten)]
         filter: FilterArg,
         #[command(flatten)]
