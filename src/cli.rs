@@ -74,8 +74,8 @@ pub struct FilterArg {
 #[command(name = "arrs", about = "Inspect Arrow-based datasets.", version)]
 pub struct Cli {
     /// Output format for row-producing commands. When unset, metadata commands
-    /// (versions/branches/tags/indices) default to `table` (fully buffered to enable column
-    /// alignment); everything else to `jsonl` (streaming).
+    /// (versions/branches/tags/indices/fragments) default to `table` (fully buffered to enable
+    /// column alignment); everything else to `jsonl` (streaming).
     #[arg(long, global = true, value_enum)]
     pub format: Option<Format>,
 
@@ -194,6 +194,21 @@ pub enum Command {
     /// (Lance only) Print indices defined on the dataset.
     Indices {
         input: PathBuf,
+        #[command(flatten)]
+        lance: LanceArgs,
+    },
+
+    /// (Lance only) List fragments with row, deletion, file, and size info.
+    Fragments {
+        input: PathBuf,
+        /// Show each fragment's data file paths in table output (they are
+        /// always included in jsonl/csv output).
+        #[arg(long)]
+        verbose: bool,
+        /// Skip on-disk size computation, avoiding object-store lookups on very
+        /// remote or huge datasets. The `size` column is left empty.
+        #[arg(long = "no-size")]
+        no_size: bool,
         #[command(flatten)]
         lance: LanceArgs,
     },

@@ -193,6 +193,108 @@ fn list_indices_finds_btree_index() {
     });
 }
 
+/// Build a dataset with three fragments (one per append) and, when `delete` is
+/// set, tombstone a single row so exactly one fragment carries a deletion file.
+async fn build_fragmented(tmp: &TempDir, name: &str, delete: bool) -> PathBuf {
+    let path = tmp.path().join(name);
+    let uri = path.to_string_lossy().into_owned();
+
+    let iter = RecordBatchIterator::new(vec![Ok(batch(vec![1, 2], vec!["a", "b"]))], schema());
+    let mut ds = LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+
+    let iter = RecordBatchIterator::new(vec![Ok(batch(vec![3, 4], vec!["c", "d"]))], schema());
+    ds.append(iter, None).await.unwrap();
+
+    let iter = RecordBatchIterator::new(vec![Ok(batch(vec![5, 6], vec!["e", "f"]))], schema());
+    ds.append(iter, None).await.unwrap();
+
+    if delete {
+        // `id = 3` lives in the second fragment.
+        ds.delete("id = 3").await.unwrap();
+    }
+    path
+}
+
+#[test]
+fn list_fragments_reports_rows_files_and_sizes() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fragmented(&tmp, "ds", false).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let fragments = lance.list_fragments(true).await.unwrap();
+        // Three appends → three fragments, each with two physical rows.
+        assert_eq!(fragments.len(), 3);
+        let total_physical: u64 = fragments.iter().map(|f| f.physical_rows).sum();
+        assert_eq!(total_physical, 6);
+        for f in &fragments {
+            assert_eq!(f.deleted_rows, 0);
+            assert!(f.num_files >= 1);
+            assert_eq!(f.num_files as usize, f.files.len());
+            // Local dataset: on-disk size is known and non-zero.
+            assert!(f.size.is_some_and(|s| s > 0));
+        }
+        // Fragment ids are unique.
+        let mut ids: Vec<u64> = fragments.iter().map(|f| f.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 3);
+    });
+}
+
+#[test]
+fn list_fragments_counts_deleted_rows() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fragmented(&tmp, "ds", true).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let fragments = lance.list_fragments(false).await.unwrap();
+        let total_deleted: u64 = fragments.iter().map(|f| f.deleted_rows).sum();
+        assert_eq!(total_deleted, 1);
+        // Exactly one fragment carries the deletion.
+        assert_eq!(fragments.iter().filter(|f| f.deleted_rows > 0).count(), 1);
+        // Physical rows are unaffected by deletions (tombstone, not rewrite).
+        let total_physical: u64 = fragments.iter().map(|f| f.physical_rows).sum();
+        assert_eq!(total_physical, 6);
+    });
+}
+
+#[test]
+fn list_fragments_no_size_leaves_size_unset() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fragmented(&tmp, "ds", false).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let fragments = lance.list_fragments(false).await.unwrap();
+        assert!(!fragments.is_empty());
+        assert!(fragments.iter().all(|f| f.size.is_none()));
+    });
+}
+
+#[test]
+fn list_fragments_respects_version_checkout() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_fragmented(&tmp, "ds", false).await;
+
+        // Version 1 predates the two appends → a single fragment.
+        let lance_args = LanceArgs {
+            version: Some(1),
+            ..LanceArgs::default()
+        };
+        let ds = dataset::open(&path, Some(&lance_args)).await.unwrap();
+        let lance = ds.lance().unwrap();
+        let fragments = lance.list_fragments(false).await.unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].physical_rows, 2);
+    });
+}
+
 // ----------------------------- checkout flags -------------------------------
 
 #[test]

@@ -88,6 +88,16 @@ pub trait LanceCapabilities: Send + Sync {
 
     /// List every tag in the dataset, regardless of branch.
     async fn list_tags(&self) -> Result<Vec<TagInfo>>;
+
+    /// List the physical fragments of the active version of the dataset.
+    ///
+    /// Row counts, deletion counts and file lists come straight from the
+    /// manifest, so this stays fast regardless of dataset size. When
+    /// `with_size` is true, each fragment's on-disk byte size is also
+    /// computed — from the manifest when the size is cached there, otherwise
+    /// via concurrent object-store lookups. Pass `false` to skip that entirely
+    /// (leaving `FragmentInfo::size` as `None`) for very remote or huge datasets.
+    async fn list_fragments(&self, with_size: bool) -> Result<Vec<FragmentInfo>>;
 }
 
 /// One row in `arrs versions` output.
@@ -124,6 +134,24 @@ pub struct TagInfo {
     pub name: String,
     pub branch: String,
     pub version: u64,
+}
+
+/// One row in `arrs fragments` output.
+#[derive(Debug, Clone)]
+pub struct FragmentInfo {
+    /// Fragment id, unique and stable within the dataset.
+    pub id: u64,
+    /// Rows physically stored in the fragment, ignoring deletions.
+    pub physical_rows: u64,
+    /// Rows tombstoned by the fragment's deletion file (0 when there is none).
+    pub deleted_rows: u64,
+    /// Number of data files backing the fragment.
+    pub num_files: u64,
+    /// Relative paths of the fragment's data files.
+    pub files: Vec<String>,
+    /// Summed on-disk size of the data files in bytes, or `None` when size
+    /// computation was skipped (see `LanceCapabilities::list_fragments`).
+    pub size: Option<u64>,
 }
 
 /// Open a dataset at `path`, optionally checking out a specific Lance

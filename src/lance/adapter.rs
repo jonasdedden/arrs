@@ -7,7 +7,7 @@ use arrow_array::RecordBatchReader;
 use arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use lance::Dataset as InnerLance;
 use lance::dataset::ProjectionRequest;
 use lance_index::DatasetIndexExt as _;
@@ -15,12 +15,17 @@ use lance_index::DatasetIndexExt as _;
 use crate::Result;
 use crate::cli::LanceArgs;
 use crate::dataset::{
-    BatchStream, BranchInfo, Dataset, IndexInfo, LanceCapabilities, ScanOptions, TagInfo,
-    VersionInfo,
+    BatchStream, BranchInfo, Dataset, FragmentInfo, IndexInfo, LanceCapabilities, ScanOptions,
+    TagInfo, VersionInfo,
 };
 use crate::error::Error;
 
 const MAIN_BRANCH: &str = "main";
+
+/// Max in-flight object-store `size` lookups when computing fragment sizes.
+/// Fragments are typically backed by a single data file, so this bounds the
+/// number of concurrent `head`-style requests to a remote store.
+const SIZE_CONCURRENCY: usize = 16;
 
 #[derive(Debug)]
 pub struct LanceDataset {
@@ -398,6 +403,105 @@ impl LanceCapabilities for LanceDataset {
                 }
             })
             .collect())
+    }
+
+    async fn list_fragments(&self, with_size: bool) -> Result<Vec<FragmentInfo>> {
+        let fragments = self.inner.get_fragments();
+
+        // Everything except size comes straight from the manifest, so no I/O
+        // happens on the common path. We only fall back to a per-fragment await
+        // for legacy fragments whose manifest omits the row/deletion counts.
+        // Those fallback awaits (`physical_rows()` / `count_deletions()`) are
+        // untested by construction: lance 4.0 always populates these fields for
+        // freshly written datasets, so the test suite never reaches them.
+        let mut out: Vec<FragmentInfo> = Vec::with_capacity(fragments.len());
+        for frag in &fragments {
+            let meta = frag.metadata();
+            let physical_rows = match meta.physical_rows {
+                Some(n) => n as u64,
+                None => frag
+                    .physical_rows()
+                    .await
+                    .map_err(|e| Error::Lance(Box::new(e)))? as u64,
+            };
+            let deleted_rows = match &meta.deletion_file {
+                None => 0,
+                Some(df) => match df.num_deleted_rows {
+                    Some(n) => n as u64,
+                    None => frag
+                        .count_deletions()
+                        .await
+                        .map_err(|e| Error::Lance(Box::new(e)))? as u64,
+                },
+            };
+            let files: Vec<String> = meta.files.iter().map(|f| f.path.clone()).collect();
+            out.push(FragmentInfo {
+                id: meta.id,
+                physical_rows,
+                deleted_rows,
+                num_files: files.len() as u64,
+                files,
+                size: None,
+            });
+        }
+
+        if with_size {
+            let data_dir = self.inner.data_dir();
+            let object_store = self.inner.object_store();
+
+            // Collect owned `(relative path, cached size)` specs up front so the
+            // concurrent closures below borrow nothing from `fragments` — that
+            // keeps the async blocks free of the higher-ranked lifetimes that
+            // `buffer_unordered` otherwise can't satisfy.
+            let specs: Vec<(usize, Vec<(String, Option<u64>)>)> = fragments
+                .iter()
+                .enumerate()
+                .map(|(i, frag)| {
+                    let files = frag
+                        .metadata()
+                        .files
+                        .iter()
+                        .map(|f| (f.path.clone(), f.file_size_bytes.get().map(|n| n.get())))
+                        .collect();
+                    (i, files)
+                })
+                .collect();
+
+            // Prefer the size cached in the manifest; only hit the object store
+            // for files that don't record it. Requests run concurrently, keyed
+            // by index so results can be reassembled after `buffer_unordered`
+            // returns them out of order. The object-store `size()` fallback is
+            // untested by construction: lance 4.0 records `file_size_bytes` in
+            // the manifest for fresh datasets, so tests take the cached branch.
+            let sized: Vec<(usize, u64)> = futures::stream::iter(specs)
+                .map(|(i, files)| {
+                    let data_dir = &data_dir;
+                    async move {
+                        let mut total = 0u64;
+                        for (path, cached) in files {
+                            match cached {
+                                Some(sz) => total += sz,
+                                None => {
+                                    let object_path = data_dir.child(path.as_str());
+                                    total += object_store
+                                        .size(&object_path)
+                                        .await
+                                        .map_err(|e| Error::Lance(Box::new(e)))?;
+                                }
+                            }
+                        }
+                        Ok::<(usize, u64), Error>((i, total))
+                    }
+                })
+                .buffer_unordered(SIZE_CONCURRENCY)
+                .try_collect()
+                .await?;
+            for (i, total) in sized {
+                out[i].size = Some(total);
+            }
+        }
+
+        Ok(out)
     }
 }
 

@@ -13,6 +13,7 @@
 //!     cargo run -- branches sample.lance
 //!     cargo run -- tags sample.lance                            # cross-branch tag listing
 //!     cargo run -- indices sample.lance
+//!     cargo run -- fragments sample.lance                       # fragments with rows/sizes
 //!
 //!     # Predicate filtering
 //!     cargo run -- head --where "id > 5" sample.lance          # first matching rows
