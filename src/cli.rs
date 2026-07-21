@@ -232,11 +232,11 @@ pub enum Command {
         #[arg(long = "vector-file")]
         vector_file: Option<PathBuf>,
         /// Number of nearest neighbors to return.
-        #[arg(short = 'k', default_value_t = 10)]
-        k: usize,
+        #[arg(short = 'k', default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+        k: u64,
         /// IVF partitions to probe (index tuning; no effect without an index).
-        #[arg(long)]
-        nprobes: Option<usize>,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        nprobes: Option<u64>,
         /// Refine factor for re-ranking search results (index tuning).
         #[arg(long = "refine-factor")]
         refine_factor: Option<u32>,

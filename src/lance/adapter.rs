@@ -12,6 +12,7 @@ use futures::{StreamExt, TryStreamExt};
 use lance::Dataset as InnerLance;
 use lance::dataset::ProjectionRequest;
 use lance_index::DatasetIndexExt as _;
+use lance_index::vector::DIST_COL;
 
 use crate::Result;
 use crate::cli::LanceArgs;
@@ -538,13 +539,28 @@ impl LanceCapabilities for LanceDataset {
         if let Some(factor) = params.refine_factor {
             scanner.refine(factor);
         }
-        if let Some(cols) = params.projection {
-            // `_distance` is force-appended by Lance's scoring autoprojection even
-            // when an explicit projection is given, so it is always in the output.
-            scanner
-                .project(cols)
-                .map_err(|e| Error::Lance(Box::new(e)))?;
+
+        // Build the projection explicitly and opt out of Lance's deprecated
+        // scoring autoprojection (which silently appends `_distance` today but
+        // is slated to stop). We always force-include `_distance` ourselves —
+        // it is a recognised system column, resolved against the search output
+        // schema — so it is present regardless of the user's `--columns`.
+        scanner.disable_scoring_autoprojection();
+        let mut projection: Vec<String> = match params.projection {
+            Some(cols) => cols.to_vec(),
+            None => self
+                .arrow_schema
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect(),
+        };
+        if !projection.iter().any(|c| c == DIST_COL) {
+            projection.push(DIST_COL.to_string());
         }
+        scanner
+            .project(&projection)
+            .map_err(|e| Error::Lance(Box::new(e)))?;
 
         let used_index = self.column_has_ann_index(params.column).await?;
 

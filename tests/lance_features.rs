@@ -342,6 +342,38 @@ fn search_projection_composes_with_distance() {
 }
 
 #[test]
+fn search_projection_may_name_distance_explicitly() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let path = build_vector_fixture(&tmp, "vec", true).await;
+        let ds = dataset::open(&path, None).await.unwrap();
+        let lance = ds.lance().unwrap();
+
+        let query = vec![0.9_f32, 0.8, 0.1, 0.0];
+        // The adapter force-includes `_distance`; naming it explicitly must not
+        // produce a duplicate column.
+        let projection = vec!["id".to_string(), "_distance".to_string()];
+        let params = VectorSearchParams {
+            column: "embedding",
+            vector: &query,
+            k: 2,
+            nprobes: Some(1),
+            refine_factor: None,
+            projection: Some(&projection),
+        };
+        let result = lance.search(&params).await.unwrap();
+        let distance_cols = result
+            .schema
+            .fields()
+            .iter()
+            .filter(|f| f.name() == "_distance")
+            .count();
+        assert_eq!(distance_cols, 1, "_distance must appear exactly once");
+        assert!(result.schema.field_with_name("id").is_ok());
+    });
+}
+
+#[test]
 fn search_output_works_in_all_formats() {
     runtime().block_on(async {
         let tmp = tempdir();

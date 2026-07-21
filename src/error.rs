@@ -62,6 +62,13 @@ pub enum Error {
     #[error("could not parse query vector as a JSON array of numbers: {0}")]
     VectorParse(String),
 
+    #[error("failed to read query vector file {path}")]
+    VectorFileRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("failed to open lance dataset at {path}")]
     LanceOpen {
         path: String,

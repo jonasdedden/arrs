@@ -2,6 +2,7 @@ use std::io::Read as _;
 use std::path::Path;
 
 use futures::StreamExt;
+use lance_index::vector::DIST_COL;
 
 use crate::Result;
 use crate::cli::{BinaryFormat, Format, LanceArgs};
@@ -41,8 +42,18 @@ pub async fn run(
         path: input.to_path_buf(),
     })?;
 
+    // `_distance` is always appended by the search, so tolerate the user naming
+    // it explicitly in `--columns` (it isn't a real dataset column and would
+    // otherwise trip the projection resolver). Drop it here; the adapter
+    // re-adds it in the right place.
+    let filtered_columns: Option<Vec<String>> = columns.map(|cols| {
+        cols.iter()
+            .filter(|c| c.as_str() != DIST_COL)
+            .cloned()
+            .collect()
+    });
     let arrow_schema = ds.arrow_schema();
-    let projection = projection::resolve(&arrow_schema, columns, exclude)?;
+    let projection = projection::resolve(&arrow_schema, filtered_columns.as_deref(), exclude)?;
 
     let params = VectorSearchParams {
         column,
@@ -80,7 +91,12 @@ fn parse_query_vector(source: QuerySource<'_>) -> Result<Vec<f32>> {
             std::io::stdin().read_to_string(&mut buf)?;
             buf
         }
-        QuerySource::File(p) => std::fs::read_to_string(p)?,
+        QuerySource::File(p) => {
+            std::fs::read_to_string(p).map_err(|source| Error::VectorFileRead {
+                path: p.to_path_buf(),
+                source,
+            })?
+        }
     };
 
     let values: Vec<f64> =
