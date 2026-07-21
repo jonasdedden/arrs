@@ -41,6 +41,14 @@ pub enum Error {
     #[error("sample size {requested} is larger than dataset row count {rowcount}")]
     SampleTooLarge { requested: u64, rowcount: u64 },
 
+    #[error("invalid --where predicate: {0}")]
+    InvalidPredicate(String),
+
+    #[error(
+        "--where cannot be combined with 'take --indices'; indices are positional. Filter rows with another command (e.g. 'head --where ...') instead"
+    )]
+    TakeWhereConflict,
+
     #[error("failed to open lance dataset at {path}")]
     LanceOpen {
         path: PathBuf,

@@ -15,7 +15,8 @@ use lance_index::DatasetIndexExt as _;
 use crate::Result;
 use crate::cli::LanceArgs;
 use crate::dataset::{
-    BatchStream, BranchInfo, Dataset, IndexInfo, LanceCapabilities, TagInfo, VersionInfo,
+    BatchStream, BranchInfo, Dataset, IndexInfo, LanceCapabilities, ScanOptions, TagInfo,
+    VersionInfo,
 };
 use crate::error::Error;
 
@@ -49,6 +50,20 @@ impl LanceDataset {
             Some(cols) => ProjectionRequest::from_columns(cols.iter(), self.inner.schema()),
             None => ProjectionRequest::from_schema(self.inner.schema().clone()),
         }
+    }
+
+    /// Parse `predicate` against the dataset schema without running a scan,
+    /// mapping any failure to [`Error::InvalidPredicate`]. Used to give a
+    /// filtered `count_rows` the same clear error a `scan` would produce.
+    fn validate_predicate(&self, predicate: &str) -> Result<()> {
+        let mut scanner = self.inner.scan();
+        scanner
+            .filter(predicate)
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        scanner
+            .get_expr_filter()
+            .map_err(|e| Error::InvalidPredicate(e.to_string()))?;
+        Ok(())
     }
 }
 
@@ -120,21 +135,38 @@ impl Dataset for LanceDataset {
         }
     }
 
-    async fn count_rows(&self) -> Result<u64> {
+    async fn count_rows(&self, filter: Option<&str>) -> Result<u64> {
+        // Validate the predicate up front so a bad `--where` surfaces as an
+        // `InvalidPredicate` rather than an opaque count failure. Lance pushes
+        // the filter into scalar indices when available, so this stays cheap.
+        if let Some(pred) = filter {
+            self.validate_predicate(pred)?;
+        }
         let n = self
             .inner
-            .count_rows(None)
+            .count_rows(filter.map(str::to_owned))
             .await
             .map_err(|e| Error::Lance(Box::new(e)))?;
         Ok(n as u64)
     }
 
-    async fn scan(&self, projection: Option<&[String]>) -> Result<BatchStream> {
+    async fn scan(&self, options: &ScanOptions<'_>) -> Result<BatchStream> {
         let mut scanner = self.inner.scan();
-        if let Some(cols) = projection {
+        if let Some(cols) = options.projection {
             scanner
                 .project(cols)
                 .map_err(|e| Error::Lance(Box::new(e)))?;
+        }
+        if let Some(pred) = options.filter {
+            // `filter()` only stores the SQL string; force an eager parse
+            // against the schema so an invalid predicate is reported here with
+            // context instead of failing deep inside the stream.
+            scanner
+                .filter(pred)
+                .map_err(|e| Error::Lance(Box::new(e)))?;
+            scanner
+                .get_expr_filter()
+                .map_err(|e| Error::InvalidPredicate(e.to_string()))?;
         }
         let stream = scanner
             .try_into_stream()

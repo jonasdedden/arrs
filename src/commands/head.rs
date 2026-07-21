@@ -5,9 +5,10 @@ use futures::StreamExt;
 use crate::Result;
 use crate::cli::{BinaryFormat, Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema};
-use crate::dataset;
+use crate::dataset::{self, ScanOptions};
 use crate::projection;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     input: &Path,
     limit: u64,
@@ -15,6 +16,7 @@ pub async fn run(
     binary_format: BinaryFormat,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
+    filter: Option<&str>,
     lance: &LanceArgs,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
@@ -31,7 +33,11 @@ pub async fn run(
         return Ok(());
     }
 
-    let mut stream = ds.scan(projection.as_deref()).await?;
+    let options = ScanOptions {
+        projection: projection.as_deref(),
+        filter,
+    };
+    let mut stream = ds.scan(&options).await?;
     while let Some(batch) = stream.next().await {
         let batch = batch?;
         let rows = batch.num_rows() as u64;

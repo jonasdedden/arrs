@@ -14,6 +14,10 @@
 //!     cargo run -- tags sample.lance                            # cross-branch tag listing
 //!     cargo run -- indices sample.lance
 //!
+//!     # Predicate filtering
+//!     cargo run -- head --where "id > 5" sample.lance          # first matching rows
+//!     cargo run -- rowcount --where "flag = true" sample.lance # count matching rows
+//!
 //!     # Time-travel reads
 //!     cargo run -- rowcount sample.lance                       # latest of main
 //!     cargo run -- rowcount --version 1 sample.lance           # just v1

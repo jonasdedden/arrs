@@ -5,16 +5,18 @@ use futures::StreamExt;
 use crate::Result;
 use crate::cli::{BinaryFormat, Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema, schemas_match};
-use crate::dataset;
+use crate::dataset::{self, ScanOptions};
 use crate::error::Error;
 use crate::projection;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     inputs: &[PathBuf],
     format: Format,
     binary_format: BinaryFormat,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
+    filter: Option<&str>,
     lance: &LanceArgs,
 ) -> Result<()> {
     if inputs.is_empty() {
@@ -44,8 +46,12 @@ pub async fn run(
     let mut writer = make_stdout_writer(format, binary_format);
     writer.start(&projected_schema)?;
 
+    let options = ScanOptions {
+        projection: projection.as_deref(),
+        filter,
+    };
     for ds in &opened {
-        let mut stream = ds.scan(projection.as_deref()).await?;
+        let mut stream = ds.scan(&options).await?;
         while let Some(batch) = stream.next().await {
             let batch = batch?;
             writer.write_batch(&batch)?;

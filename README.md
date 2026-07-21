@@ -9,6 +9,7 @@ so other Arrow-backed formats can be added without touching commands or output.
 - Stream or random-access any Lance dataset from the shell.
 - Print rows as **JSONL**, **CSV**, or a
   pretty **table**.
+- Filter rows by content with a SQL-style `--where` predicate.
 - Project columns with `--columns` / `--exclude-columns`.
 - Choose how binary payloads are rendered: hidden behind a placeholder, hex
   (`\xHH`), or base64.
@@ -57,6 +58,7 @@ cargo run --release -- <command> [args…]
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
 | `--columns <a,b,…>`         | –       | Comma-separated include list. User order is preserved.      |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Takes precedence over `--columns`.|
+| `--where <predicate>`       | –       | Keep only rows matching a SQL-style predicate. Supported by `cat`, `head`, `tail`, `rowcount`, `sample`. See below. |
 
 ## Examples
 
@@ -83,6 +85,42 @@ arrs cat --columns id,score part_a.lance part_b.lance
 arrs schema dataset.lance                 # arrow (logical)
 arrs schema --type physical dataset.lance # lance-native (field ids, encoding…)
 ```
+
+### Filtering rows with `--where`
+
+`--where` takes a SQL-style predicate (parsed by the backend — DataFusion SQL
+for Lance) and keeps only the rows that match. It is available on every
+row-producing command plus `rowcount`:
+
+| Command    | With `--where`                                                   |
+|------------|------------------------------------------------------------------|
+| `cat`      | Print every matching row.                                        |
+| `head`     | Print the first `N` *matching* rows.                             |
+| `tail`     | Print the last `N` *matching* rows.                              |
+| `rowcount` | Count matching rows (pushed into scalar indices when available). |
+| `sample`   | Randomly sample `N` of the *matching* rows.                      |
+
+The filter is applied **before** row selection, so `head`/`tail`/`sample`
+operate on the matching rows rather than filtering a positional slice.
+
+```sh
+# First 20 rows where two conditions hold.
+arrs head -n 20 --where "score > 0.5 AND name LIKE 'a%'" dataset.lance
+
+# Count matching rows without a full scan when the column is indexed.
+arrs rowcount --where "label = 'spam'" dataset.lance
+
+# Filter and project together.
+arrs cat --where "created_at >= TIMESTAMP '2026-01-01'" --columns id,score dataset.lance
+
+# Random sample drawn only from the test split.
+arrs sample -n 100 --where "split = 'test'" dataset.lance
+```
+
+`take --indices` addresses rows *positionally*, so combining it with `--where`
+is ambiguous and is rejected with a clear error — filter with `head`/`cat`
+instead. Invalid predicates surface the backend's parse error as
+`invalid --where predicate: …`.
 
 ### Lance versioning, branches and tags
 

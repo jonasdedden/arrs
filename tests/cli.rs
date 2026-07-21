@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
-use arrs::cli::{BinaryFormat, Cli, Command, Format};
+use arrs::cli::{BinaryFormat, Cli, Command, FilterArg, Format, LanceArgs};
 use arrs::commands::dispatch;
 use arrs::dataset;
+use arrs::dataset::ScanOptions;
 use arrs::indices;
 use arrs::output::make_writer;
 use arrs::output::table::TableStyle;
@@ -62,7 +63,11 @@ async fn collect_cat(
         w.start(&projected)?;
         for p in &inputs {
             let ds = dataset::open(p, None).await?;
-            let mut stream = ds.scan(proj.as_deref()).await?;
+            let options = ScanOptions {
+                projection: proj.as_deref(),
+                filter: None,
+            };
+            let mut stream = ds.scan(&options).await?;
             while let Some(b) = stream.next().await {
                 w.write_batch(&b?)?;
             }
@@ -92,7 +97,7 @@ async fn collect_head(
         w.start(&projected)?;
         let mut remaining = limit;
         if remaining > 0 {
-            let mut stream = ds.scan(None).await?;
+            let mut stream = ds.scan(&ScanOptions::default()).await?;
             while let Some(batch) = stream.next().await {
                 let batch = batch?;
                 let rows = batch.num_rows() as u64;
@@ -122,7 +127,7 @@ async fn collect_tail(
     let ds = dataset::open(input, None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
-    let rowcount = ds.count_rows().await?;
+    let rowcount = ds.count_rows(None).await?;
     let take_n = limit.min(rowcount);
     let mut out: Vec<u8> = Vec::new();
     {
@@ -153,7 +158,7 @@ async fn collect_take(
     let ds = dataset::open(input, None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
-    let rowcount = ds.count_rows().await?;
+    let rowcount = ds.count_rows(None).await?;
     let indices = indices::resolve(idx, rowcount)?;
     let mut out: Vec<u8> = Vec::new();
     {
@@ -187,7 +192,7 @@ async fn collect_sample(
     let ds = dataset::open(input, None).await?;
     let s = ds.arrow_schema();
     let projected = project(&s, None);
-    let rowcount = ds.count_rows().await?;
+    let rowcount = ds.count_rows(None).await?;
     let mut pool: Vec<u64> = (0..rowcount).collect();
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     pool.shuffle(&mut rng);
@@ -210,6 +215,158 @@ async fn collect_sample(
     Ok(String::from_utf8(out).unwrap())
 }
 
+/// Scan `input` with a `--where` filter and return every matching row as
+/// JSONL. Mirrors what `cat --where` / `head --where` (large limit) produce.
+async fn collect_scan_where(input: &Path, filter: &str) -> arrs::Result<String> {
+    let ds = dataset::open(input, None).await?;
+    let s = ds.arrow_schema();
+    let projected = project(&s, None);
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut w = make_writer(
+            Format::Jsonl,
+            BinaryFormat::None,
+            TableStyle::Plain,
+            Cursor::new(&mut out),
+        );
+        w.start(&projected)?;
+        let options = ScanOptions {
+            projection: None,
+            filter: Some(filter),
+        };
+        let mut stream = ds.scan(&options).await?;
+        while let Some(batch) = stream.next().await {
+            w.write_batch(&batch?)?;
+        }
+        w.finish()?;
+    }
+    Ok(String::from_utf8(out).unwrap())
+}
+
+/// Filtered `tail`: the last `limit` *matching* rows. Mirrors the streaming
+/// ring-buffer path in `commands::tail`.
+async fn collect_tail_where(input: &Path, limit: u64, filter: &str) -> arrs::Result<String> {
+    use std::collections::VecDeque;
+
+    let ds = dataset::open(input, None).await?;
+    let s = ds.arrow_schema();
+    let projected = project(&s, None);
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut w = make_writer(
+            Format::Jsonl,
+            BinaryFormat::None,
+            TableStyle::Plain,
+            Cursor::new(&mut out),
+        );
+        w.start(&projected)?;
+        if limit > 0 {
+            let options = ScanOptions {
+                projection: None,
+                filter: Some(filter),
+            };
+            let mut stream = ds.scan(&options).await?;
+            let mut buffered: VecDeque<arrow_array::RecordBatch> = VecDeque::new();
+            let mut buffered_rows: u64 = 0;
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                buffered_rows += batch.num_rows() as u64;
+                buffered.push_back(batch);
+                while let Some(front) = buffered.front() {
+                    let front_rows = front.num_rows() as u64;
+                    if buffered_rows - front_rows >= limit {
+                        buffered_rows -= front_rows;
+                        buffered.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            let mut skip = buffered_rows - limit.min(buffered_rows);
+            for batch in buffered {
+                let rows = batch.num_rows() as u64;
+                if skip >= rows {
+                    skip -= rows;
+                    continue;
+                }
+                w.write_batch(&batch.slice(skip as usize, (rows - skip) as usize))?;
+                skip = 0;
+            }
+        }
+        w.finish()?;
+    }
+    Ok(String::from_utf8(out).unwrap())
+}
+
+/// Filtered `sample`: reservoir-sample `limit` matching rows. Mirrors the
+/// streaming path in `commands::sample`.
+async fn collect_sample_where(
+    input: &Path,
+    limit: u64,
+    seed: u64,
+    filter: &str,
+) -> arrs::Result<String> {
+    use rand::SeedableRng;
+    use rand::prelude::*;
+    use rand_chacha::ChaCha20Rng;
+
+    let ds = dataset::open(input, None).await?;
+    let s = ds.arrow_schema();
+    let projected = project(&s, None);
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut w = make_writer(
+            Format::Jsonl,
+            BinaryFormat::None,
+            TableStyle::Plain,
+            Cursor::new(&mut out),
+        );
+        w.start(&projected)?;
+        if limit > 0 {
+            let options = ScanOptions {
+                projection: None,
+                filter: Some(filter),
+            };
+            let mut stream = ds.scan(&options).await?;
+            let cap = limit as usize;
+            let mut rng = ChaCha20Rng::seed_from_u64(seed);
+            let mut reservoir: Vec<arrow_array::RecordBatch> = Vec::with_capacity(cap);
+            let mut seen: u64 = 0;
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                for r in 0..batch.num_rows() {
+                    let row = batch.slice(r, 1);
+                    if reservoir.len() < cap {
+                        reservoir.push(row);
+                    } else {
+                        let j = rng.random_range(0..=seen);
+                        if (j as usize) < cap {
+                            reservoir[j as usize] = row;
+                        }
+                    }
+                    seen += 1;
+                }
+            }
+            if limit > seen {
+                return Err(arrs::error::Error::SampleTooLarge {
+                    requested: limit,
+                    rowcount: seen,
+                });
+            }
+            if !reservoir.is_empty() {
+                let schema = reservoir[0].schema();
+                let combined = arrow::compute::concat_batches(&schema, &reservoir)?;
+                w.write_batch(&combined)?;
+            }
+        }
+        w.finish()?;
+    }
+    Ok(String::from_utf8(out).unwrap())
+}
+
 // -------------------- tests --------------------
 
 #[test]
@@ -218,7 +375,7 @@ fn rowcount_is_5_for_simple_fixture() {
         let tmp = tempdir();
         let p = write_simple(&tmp, "simple").await;
         let ds = dataset::open(&p, None).await.unwrap();
-        assert_eq!(ds.count_rows().await.unwrap(), 5);
+        assert_eq!(ds.count_rows(None).await.unwrap(), 5);
     });
 }
 
@@ -656,6 +813,7 @@ fn format_on_rowcount_errors() {
             exclude_columns: None,
             command: Command::Rowcount {
                 input: std::path::PathBuf::from("does-not-matter"),
+                filter: FilterArg::default(),
                 lance: arrs::cli::LanceArgs::default(),
             },
         };
@@ -679,6 +837,7 @@ fn empty_cat_via_dispatch_errors() {
             exclude_columns: None,
             command: Command::Cat {
                 inputs: vec![],
+                filter: FilterArg::default(),
                 lance: arrs::cli::LanceArgs::default(),
             },
         };
@@ -707,5 +866,176 @@ fn csv_quotes_column_name_containing_comma() {
         let mut lines = out.lines();
         assert_eq!(lines.next().unwrap(), r#""a,b""#);
         assert_eq!(lines.next().unwrap(), "1");
+    });
+}
+
+// -------------------- --where predicate filtering --------------------
+
+fn ids(out: &str) -> Vec<i64> {
+    out.lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["id"]
+                .as_i64()
+                .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn where_number_predicate_filters_and_preserves_order() {
+    // Filtered scan keeps dataset order, so `head -n 1` semantics fall out of
+    // taking the first matching row.
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        let out = collect_scan_where(&p, "id >= 3").await.unwrap();
+        assert_eq!(ids(&out), vec![3, 4, 5]);
+    });
+}
+
+#[test]
+fn where_string_predicate_filters_rows() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        let out = collect_scan_where(&p, "name = 'alice'").await.unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["name"], "alice");
+    });
+}
+
+#[test]
+fn where_empty_result_set_yields_no_rows() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        let out = collect_scan_where(&p, "id > 100").await.unwrap();
+        assert_eq!(out.lines().count(), 0);
+    });
+}
+
+#[test]
+fn rowcount_with_where_uses_filtered_count() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        let ds = dataset::open(&p, None).await.unwrap();
+        assert_eq!(ds.count_rows(Some("id >= 4")).await.unwrap(), 2);
+        // Empty result set counts as zero, not an error.
+        assert_eq!(ds.count_rows(Some("id > 100")).await.unwrap(), 0);
+    });
+}
+
+#[test]
+fn invalid_where_predicate_on_scan_errors() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        let ds = dataset::open(&p, None).await.unwrap();
+        let options = ScanOptions {
+            projection: None,
+            filter: Some("not_a_column > 1"),
+        };
+        // `scan` yields a non-Debug `BatchStream` on success, so match rather
+        // than `unwrap_err`.
+        match ds.scan(&options).await {
+            Err(arrs::error::Error::InvalidPredicate(_)) => {}
+            other => panic!("expected InvalidPredicate, got {:?}", other.map(|_| ())),
+        }
+    });
+}
+
+#[test]
+fn invalid_where_predicate_on_rowcount_errors() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        let ds = dataset::open(&p, None).await.unwrap();
+        let err = ds
+            .count_rows(Some("this is not sql ((("))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, arrs::error::Error::InvalidPredicate(_)));
+    });
+}
+
+#[test]
+fn take_with_where_is_rejected() {
+    runtime().block_on(async {
+        let cli = Cli {
+            format: None,
+            binary_format: BinaryFormat::None,
+            columns: None,
+            exclude_columns: None,
+            command: Command::Take {
+                input: std::path::PathBuf::from("does-not-matter"),
+                indices: "0".to_string(),
+                filter: FilterArg {
+                    predicate: Some("id > 1".to_string()),
+                },
+                lance: LanceArgs::default(),
+            },
+        };
+        let res = dispatch(cli).await;
+        assert!(matches!(res, Err(arrs::error::Error::TakeWhereConflict)));
+    });
+}
+
+#[test]
+fn tail_where_returns_last_matching_rows() {
+    // Matching rows are ids [1, 3, 5] (odd). The last two matching are [3, 5];
+    // note this differs from "last two rows then filter" (which would be [5]).
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        let out = collect_tail_where(&p, 2, "id % 2 = 1").await.unwrap();
+        assert_eq!(ids(&out), vec![3, 5]);
+    });
+}
+
+#[test]
+fn tail_where_limit_exceeds_matches_returns_all_matching() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        let out = collect_tail_where(&p, 100, "id >= 4").await.unwrap();
+        assert_eq!(ids(&out), vec![4, 5]);
+    });
+}
+
+#[test]
+fn sample_where_samples_only_matching_rows() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        // Matching rows are ids [2, 3, 4, 5]; a size-2 sample must draw from them.
+        let a = collect_sample_where(&p, 2, 7, "id >= 2").await.unwrap();
+        let b = collect_sample_where(&p, 2, 7, "id >= 2").await.unwrap();
+        assert_eq!(a, b, "same seed must be reproducible");
+        let sampled = ids(&a);
+        assert_eq!(sampled.len(), 2);
+        for id in sampled {
+            assert!((2..=5).contains(&id), "sampled id {id} not in matching set");
+        }
+    });
+}
+
+#[test]
+fn sample_where_larger_than_match_count_errors() {
+    runtime().block_on(async {
+        let tmp = tempdir();
+        let p = write_simple(&tmp, "s").await;
+        // Only one row matches, so a sample of 3 is impossible.
+        let err = collect_sample_where(&p, 3, 1, "id = 1").await.unwrap_err();
+        assert!(matches!(
+            err,
+            arrs::error::Error::SampleTooLarge {
+                requested: 3,
+                rowcount: 1
+            }
+        ));
     });
 }
