@@ -23,6 +23,15 @@ pub enum BinaryFormat {
     Base64,
 }
 
+/// Ordering for `freq` output rows.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+pub enum FreqSort {
+    /// Most frequent values first; ties broken by value (ascending, NULL last).
+    Count,
+    /// Values in ascending order (NULL last).
+    Value,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 pub enum SchemaType {
     /// Logical arrow schema.
@@ -184,6 +193,25 @@ pub enum Command {
     /// columns report count and nulls only.
     Stats {
         input: String,
+        #[command(flatten)]
+        filter: FilterArg,
+        #[command(flatten)]
+        lance: LanceArgs,
+    },
+
+    /// Count occurrences of each distinct value in a column (value counts).
+    Freq {
+        input: String,
+        /// Column to compute value counts for.
+        #[arg(long)]
+        column: String,
+        /// Show only the top N rows; the remaining values are summarized as an
+        /// `<other>` row. Without this, every distinct value is listed.
+        #[arg(short = 'n', long)]
+        limit: Option<u64>,
+        /// Row ordering: `count` (most frequent first, default) or `value`.
+        #[arg(long, value_enum, default_value_t = FreqSort::Count)]
+        sort: FreqSort,
         #[command(flatten)]
         filter: FilterArg,
         #[command(flatten)]

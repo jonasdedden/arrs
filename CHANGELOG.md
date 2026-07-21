@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `freq` command: value counts for a column. Emits one `value`/`count`/`percent`
+  row per distinct value (with an explicit `NULL` row), rendered in any output
+  format. Supports `-n/--limit` (folding the remainder into an `<other>` row),
+  `--sort count|value` with a deterministic value tie-break, and `--where`
+  composition; rejects nested/binary columns and guards against runaway
+  cardinality. (#9)
 - `--where <predicate>` SQL-style predicate filtering for `cat`, `head`, `tail`,
   `rowcount`, and `sample`. The filter is applied before row selection, and
   filtered `rowcount` uses the backend's native filtered count (pushed into
