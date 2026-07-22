@@ -9,17 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `blob` command: extract a single cell's binary/blob payload to a file
-  (`-o <file>`) or stdout. Takes `--column` and a single `--index` (with `take`'s
-  negative-index semantics). Works on plain `Binary`/`LargeBinary`/
-  `FixedSizeBinary`/`BinaryView` columns via `Dataset::take`, and on Lance
-  blob-encoded columns (`lance-encoding:blob`) via the streaming blob API
-  (`take_blobs_by_indices`), which are detected from field metadata and read in bounded
-  chunks so multi-GB payloads never materialize in memory. Refuses to write raw
-  bytes to a terminal, errors (non-zero exit) on null cells / out-of-range
-  indices / non-binary columns, and never leaves a partial file on `-o` (temp
-  file + atomic rename). Honours `--branch`/`--version`/`--tag`/`--as-of`. (#22)
-
 - `--where <predicate>` SQL-style predicate filtering for `cat`, `head`, `tail`,
   `rowcount`, and `sample`. The filter is applied before row selection, and
   filtered `rowcount` uses the backend's native filtered count (pushed into
@@ -118,6 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by default, `--format jsonl` for a stable machine-readable record; exit codes
   follow `diff(1)` (`0` identical, `1` differ, `2` error). The schema-delta
   rendering is shared with the version diff via `commands::diff_common`. (#13)
+- `blob` command: extract a single cell's binary/blob payload to a file
+  (`-o <file>`) or stdout. Takes `--column` and a single `--index` (with `take`'s
+  negative-index semantics). Works on plain `Binary`/`LargeBinary`/
+  `FixedSizeBinary`/`BinaryView` columns via `Dataset::take`, and on Lance
+  blob-encoded columns (`lance-encoding:blob`) via the streaming blob API
+  (`take_blobs_by_indices`), which are detected from field metadata and read in bounded
+  chunks so multi-GB payloads never materialize in memory. Refuses to write raw
+  bytes to a terminal, errors (non-zero exit) on null cells / out-of-range
+  indices / non-binary columns, and never leaves a partial file on `-o` (temp
+  file + atomic rename). Honours `--branch`/`--version`/`--tag`/`--as-of`. (#22)
 
 ### Changed
 

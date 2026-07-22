@@ -18,9 +18,9 @@ use lance_index::vector::DIST_COL;
 use crate::Result;
 use crate::cli::LanceArgs;
 use crate::dataset::{
-    BatchStream, BlobRead, BranchInfo, CheckoutState, Dataset, FragmentInfo, IndexInfo,
-    IndexStats, LanceCapabilities, MAIN_BRANCH, ScanOptions, TagInfo, VectorSearchParams,
-    VectorSearchResult, VersionInfo,
+    BatchStream, BlobRead, BranchInfo, CheckoutState, Dataset, FragmentInfo, IndexInfo, IndexStats,
+    LanceCapabilities, MAIN_BRANCH, ScanOptions, TagInfo, VectorSearchParams, VectorSearchResult,
+    VersionInfo,
 };
 use crate::error::Error;
 
