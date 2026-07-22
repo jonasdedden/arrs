@@ -39,6 +39,7 @@ use serde_json::{Map as JsonMap, Value};
 use crate::Result;
 use crate::cli::BinaryFormat;
 use crate::error::Error;
+use crate::output::RenderOptions;
 
 // ---------- schema validation ----------
 
@@ -107,19 +108,16 @@ fn validate_csv_type(col: &str, ty: &DataType) -> Result<()> {
 // ---------- CSV cell formatting ----------
 
 /// Format a single cell for CSV. Returns `None` for null (writer emits an empty field).
-pub fn csv_cell(
-    array: &dyn Array,
-    row: usize,
-    binary_format: BinaryFormat,
-) -> Result<Option<String>> {
+pub fn csv_cell(array: &dyn Array, row: usize, opts: RenderOptions) -> Result<Option<String>> {
     if array.is_null(row) {
         return Ok(None);
     }
-    Ok(Some(csv_non_null(array, row, binary_format)?))
+    Ok(Some(csv_non_null(array, row, opts)?))
 }
 
-fn csv_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> Result<String> {
+fn csv_non_null(array: &dyn Array, row: usize, opts: RenderOptions) -> Result<String> {
     use DataType::*;
+    let binary_format = opts.binary_format;
     Ok(match array.data_type() {
         Null => String::new(),
         Boolean => array.as_boolean().value(row).to_string(),
@@ -131,9 +129,18 @@ fn csv_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> R
         UInt16 => array.as_primitive::<UInt16Type>().value(row).to_string(),
         UInt32 => array.as_primitive::<UInt32Type>().value(row).to_string(),
         UInt64 => array.as_primitive::<UInt64Type>().value(row).to_string(),
-        Float16 => format_f32_csv(f32::from(array.as_primitive::<Float16Type>().value(row))),
-        Float32 => format_f32_csv(array.as_primitive::<Float32Type>().value(row)),
-        Float64 => format_f64_csv(array.as_primitive::<Float64Type>().value(row)),
+        Float16 => format_f32_text(
+            f32::from(array.as_primitive::<Float16Type>().value(row)),
+            opts.float_precision,
+        ),
+        Float32 => format_f32_text(
+            array.as_primitive::<Float32Type>().value(row),
+            opts.float_precision,
+        ),
+        Float64 => format_f64_text(
+            array.as_primitive::<Float64Type>().value(row),
+            opts.float_precision,
+        ),
         Utf8 => array.as_string::<i32>().value(row).to_string(),
         LargeUtf8 => array.as_string::<i64>().value(row).to_string(),
         Date32 => format_date32(
@@ -187,7 +194,7 @@ fn csv_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> R
         Dictionary(key_ty, _) => {
             let values = dict_values(array, key_ty);
             let logical_index = dict_logical_index(array, key_ty, row);
-            csv_non_null(values.as_ref(), logical_index, binary_format)?
+            csv_non_null(values.as_ref(), logical_index, opts)?
         }
         // Anything else should have been rejected by validate_csv_schema.
         other => {
@@ -205,14 +212,14 @@ fn csv_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> R
 /// primitives render exactly the same way, but nested types (lists, structs,
 /// maps, …) fall through to the JSONL renderer and are serialised compactly.
 /// Null becomes an empty string.
-pub fn table_cell(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> Result<String> {
+pub fn table_cell(array: &dyn Array, row: usize, opts: RenderOptions) -> Result<String> {
     if array.is_null(row) {
         return Ok(String::new());
     }
-    match csv_non_null(array, row, binary_format) {
+    match csv_non_null(array, row, opts) {
         Ok(s) => Ok(s),
         Err(Error::UnsupportedCsvType { .. }) => {
-            let v = json_non_null(array, row, binary_format)?;
+            let v = json_non_null(array, row, opts)?;
             Ok(v.to_string())
         }
         Err(e) => Err(e),
@@ -222,15 +229,16 @@ pub fn table_cell(array: &dyn Array, row: usize, binary_format: BinaryFormat) ->
 // ---------- JSON value formatting ----------
 
 /// Format a single cell as a `serde_json::Value`.
-pub fn json_value(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> Result<Value> {
+pub fn json_value(array: &dyn Array, row: usize, opts: RenderOptions) -> Result<Value> {
     if array.is_null(row) {
         return Ok(Value::Null);
     }
-    json_non_null(array, row, binary_format)
+    json_non_null(array, row, opts)
 }
 
-fn json_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> Result<Value> {
+fn json_non_null(array: &dyn Array, row: usize, opts: RenderOptions) -> Result<Value> {
     use DataType::*;
+    let binary_format = opts.binary_format;
     match array.data_type() {
         Null => Ok(Value::Null),
         Boolean => Ok(Value::Bool(array.as_boolean().value(row))),
@@ -242,13 +250,18 @@ fn json_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> 
         UInt16 => Ok(Value::from(array.as_primitive::<UInt16Type>().value(row))),
         UInt32 => Ok(Value::from(array.as_primitive::<UInt32Type>().value(row))),
         UInt64 => Ok(Value::from(array.as_primitive::<UInt64Type>().value(row))),
-        Float16 => Ok(float_json(f64::from(f32::from(
-            array.as_primitive::<Float16Type>().value(row),
-        )))),
-        Float32 => Ok(float_json(f64::from(
-            array.as_primitive::<Float32Type>().value(row),
-        ))),
-        Float64 => Ok(float_json(array.as_primitive::<Float64Type>().value(row))),
+        Float16 => Ok(float_json(
+            f64::from(f32::from(array.as_primitive::<Float16Type>().value(row))),
+            opts.float_precision,
+        )),
+        Float32 => Ok(float_json(
+            f64::from(array.as_primitive::<Float32Type>().value(row)),
+            opts.float_precision,
+        )),
+        Float64 => Ok(float_json(
+            array.as_primitive::<Float64Type>().value(row),
+            opts.float_precision,
+        )),
         Utf8 => Ok(Value::String(
             array.as_string::<i32>().value(row).to_string(),
         )),
@@ -341,21 +354,15 @@ fn json_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> 
             let v = array.as_primitive::<Decimal256Type>().value(row);
             Ok(json_number_from_str(&v.to_string()))
         }
-        List(_) => json_list_like(array.as_list::<i32>().value(row).as_ref(), binary_format),
-        LargeList(_) => json_list_like(array.as_list::<i64>().value(row).as_ref(), binary_format),
-        FixedSizeList(_, _) => json_list_like(
-            array.as_fixed_size_list().value(row).as_ref(),
-            binary_format,
-        ),
+        List(_) => json_list_like(array.as_list::<i32>().value(row).as_ref(), opts),
+        LargeList(_) => json_list_like(array.as_list::<i64>().value(row).as_ref(), opts),
+        FixedSizeList(_, _) => json_list_like(array.as_fixed_size_list().value(row).as_ref(), opts),
         Struct(_) => {
             let s = array.as_struct();
             let mut obj = JsonMap::new();
             for (i, field) in s.fields().iter().enumerate() {
                 let child = s.column(i);
-                obj.insert(
-                    field.name().clone(),
-                    json_value(child.as_ref(), row, binary_format)?,
-                );
+                obj.insert(field.name().clone(), json_value(child.as_ref(), row, opts)?);
             }
             Ok(Value::Object(obj))
         }
@@ -367,12 +374,12 @@ fn json_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> 
             let values = m.values();
             let mut obj = JsonMap::new();
             for i in start..end {
-                let key = json_value(keys.as_ref(), i, binary_format)?;
+                let key = json_value(keys.as_ref(), i, opts)?;
                 let key_str = match key {
                     Value::String(s) => s,
                     other => other.to_string(),
                 };
-                let val = json_value(values.as_ref(), i, binary_format)?;
+                let val = json_value(values.as_ref(), i, opts)?;
                 obj.insert(key_str, val);
             }
             Ok(Value::Object(obj))
@@ -380,7 +387,7 @@ fn json_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> 
         Dictionary(key_ty, _) => {
             let values = dict_values(array, key_ty);
             let logical_index = dict_logical_index(array, key_ty, row);
-            json_value(values.as_ref(), logical_index, binary_format)
+            json_value(values.as_ref(), logical_index, opts)
         }
         other => Err(Error::UnsupportedCsvType {
             column: String::new(),
@@ -389,45 +396,82 @@ fn json_non_null(array: &dyn Array, row: usize, binary_format: BinaryFormat) -> 
     }
 }
 
-fn json_list_like(array: &dyn Array, binary_format: BinaryFormat) -> Result<Value> {
-    let mut out = Vec::with_capacity(array.len());
-    for i in 0..array.len() {
-        out.push(json_value(array, i, binary_format)?);
+/// Render a list-like array to a JSON array, honoring `max_list_items`.
+///
+/// Truncation is applied at *this* level only; because the function recurses
+/// through `json_value`, a nested list is truncated independently at each
+/// level. When more than `N` elements are present, the first `N` are rendered
+/// and a final string element [`list_truncation_marker`] records how many were
+/// dropped, keeping the array valid JSON.
+fn json_list_like(array: &dyn Array, opts: RenderOptions) -> Result<Value> {
+    let len = array.len();
+    let render_count = match opts.max_list_items {
+        Some(limit) if limit < len => limit,
+        _ => len,
+    };
+    let mut out = Vec::with_capacity(render_count + 1);
+    for i in 0..render_count {
+        out.push(json_value(array, i, opts)?);
+    }
+    if render_count < len {
+        out.push(Value::String(list_truncation_marker(len - render_count)));
     }
     Ok(Value::Array(out))
 }
 
+/// The explicit, documented marker appended when a list is truncated. Emitted
+/// verbatim as a trailing string element in JSON/JSONL arrays and inside
+/// JSON-encoded nested table cells, e.g. `… (1532 more)`.
+pub fn list_truncation_marker(omitted: usize) -> String {
+    format!("… ({omitted} more)")
+}
+
 // ---------- helpers ----------
 
-fn float_json(v: f64) -> Value {
+fn float_json(v: f64, precision: Option<usize>) -> Value {
     if v.is_nan() {
         Value::String("NaN".to_string())
     } else if v.is_infinite() {
         Value::String(if v > 0.0 { "Infinity" } else { "-Infinity" }.to_string())
     } else {
-        serde_json::Number::from_f64(v)
-            .map(Value::Number)
-            .unwrap_or(Value::Null)
+        match precision {
+            // With `arbitrary_precision`, a `Number` parsed from the fixed-point
+            // string keeps its exact digits (including trailing zeros) and still
+            // serializes as a JSON number.
+            Some(p) => json_number_from_str(&format!("{v:.p$}")),
+            None => serde_json::Number::from_f64(v)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        }
     }
 }
 
-fn format_f32_csv(v: f32) -> String {
+/// Text (CSV/table) rendering of an `f32`, optionally rounded to a fixed number
+/// of fractional digits. With `precision` unset the output is byte-identical to
+/// the original shortest round-trip representation.
+fn format_f32_text(v: f32, precision: Option<usize>) -> String {
     if v.is_nan() {
         "NaN".into()
     } else if v.is_infinite() {
         if v > 0.0 { "inf".into() } else { "-inf".into() }
     } else {
-        v.to_string()
+        match precision {
+            Some(p) => format!("{v:.p$}"),
+            None => v.to_string(),
+        }
     }
 }
 
-fn format_f64_csv(v: f64) -> String {
+fn format_f64_text(v: f64, precision: Option<usize>) -> String {
     if v.is_nan() {
         "NaN".into()
     } else if v.is_infinite() {
         if v > 0.0 { "inf".into() } else { "-inf".into() }
     } else {
-        v.to_string()
+        match precision {
+            Some(p) => format!("{v:.p$}"),
+            None => v.to_string(),
+        }
     }
 }
 

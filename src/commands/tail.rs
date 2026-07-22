@@ -4,9 +4,10 @@ use arrow_array::RecordBatch;
 use futures::StreamExt;
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Format, LanceArgs};
+use crate::cli::{Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema};
 use crate::dataset::{self, Dataset, ScanOptions};
+use crate::output::RenderOptions;
 use crate::projection;
 
 #[allow(clippy::too_many_arguments)]
@@ -14,7 +15,7 @@ pub async fn run(
     input: &str,
     limit: u64,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
     filter: Option<&str>,
@@ -41,7 +42,7 @@ pub async fn run(
         }
     };
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&projected_schema)?;
     for batch in &batches {
         writer.write_batch(batch)?;

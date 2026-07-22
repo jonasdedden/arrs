@@ -38,13 +38,18 @@ pub struct DiffSelectors {
 
 pub async fn run(input: &str, sel: DiffSelectors, format: Option<Format>) -> Result<Outcome> {
     // diff emits its own summary shape, not row-shaped output, so only the
-    // default (human) and `jsonl` are meaningful. Reject csv/table explicitly
-    // rather than silently degrading to the human summary.
+    // default (human) and `jsonl` are meaningful. Reject csv/table/json
+    // explicitly rather than silently degrading to the human summary.
+    // RenderOptions is deliberately NOT threaded here: the report contains no
+    // float or list cells (counts, names, and timestamps only), so the
+    // output-control flags (--max-list-items/--max-cell-width/
+    // --float-precision) have nothing to act on. Documented in the README.
     let as_json = match format {
         None => false,
         Some(Format::Jsonl) => true,
         Some(Format::Csv) => return Err(Error::DiffFormatUnsupported { format: "csv" }),
         Some(Format::Table) => return Err(Error::DiffFormatUnsupported { format: "table" }),
+        Some(Format::Json) => return Err(Error::DiffFormatUnsupported { format: "json" }),
     };
 
     // Open the "from" endpoint first so its resolved branch can seed the

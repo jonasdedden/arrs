@@ -4,12 +4,13 @@ use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Format};
+use crate::cli::Format;
 use crate::commands::common::make_stdout_writer;
 use crate::dataset;
 use crate::error::Error;
+use crate::output::RenderOptions;
 
-pub async fn run(input: &str, format: Format, binary_format: BinaryFormat) -> Result<()> {
+pub async fn run(input: &str, format: Format, render: RenderOptions) -> Result<()> {
     let ds = dataset::open(input, None).await?;
     let lance = ds.lance().ok_or_else(|| Error::NotLance {
         command: "tags",
@@ -34,7 +35,7 @@ pub async fn run(input: &str, format: Format, binary_format: BinaryFormat) -> Re
     ));
     let batch = RecordBatch::try_new(schema.clone(), vec![name_col, branch_col, version_col])?;
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&schema)?;
     writer.write_batch(&batch)?;
     writer.finish()?;

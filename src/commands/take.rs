@@ -1,9 +1,10 @@
 use crate::Result;
-use crate::cli::{BinaryFormat, Format, LanceArgs};
+use crate::cli::{Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema};
 use crate::dataset;
 use crate::error::Error;
 use crate::indices;
+use crate::output::RenderOptions;
 use crate::projection;
 
 #[allow(clippy::too_many_arguments)]
@@ -11,7 +12,7 @@ pub async fn run(
     input: &str,
     indices_raw: &str,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
     filter: Option<&str>,
@@ -31,7 +32,7 @@ pub async fn run(
     let rowcount = ds.count_rows(None).await?;
     let indices = indices::resolve(indices_raw, rowcount)?;
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&projected_schema)?;
 
     if !indices.is_empty() {

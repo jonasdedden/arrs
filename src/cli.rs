@@ -10,6 +10,9 @@ pub enum Format {
     /// Buffers all rows before printing, so prefer `jsonl`/`csv` for very large
     /// inputs piped through `cat`/`head`/etc.
     Table,
+    /// A single well-formed JSON array (`[obj, obj, …]`), streamed with constant
+    /// memory. For consumers that can't read JSONL. Empty input yields `[]`.
+    Json,
 }
 
 /// How to render Binary / LargeBinary / FixedSizeBinary / BinaryView values.
@@ -103,6 +106,28 @@ pub struct Cli {
     /// How to render binary columns in the output.
     #[arg(long = "binary-format", global = true, value_enum, default_value_t = BinaryFormat::None)]
     pub binary_format: BinaryFormat,
+
+    /// Truncate list / large-list / fixed-size-list rendering to the first N
+    /// elements, appending an explicit marker element `… (K more)`. Applies to
+    /// jsonl/json output and to nested table cells, at every nesting level.
+    /// Lossy: truncated output is for viewing, not round-tripping. Default:
+    /// unlimited (current output preserved byte-for-byte).
+    #[arg(long = "max-list-items", global = true, value_name = "N")]
+    pub max_list_items: Option<usize>,
+
+    /// Table format only: truncate each rendered *data* cell to at most N
+    /// characters, ending with `…` when shortened. Header cells (column names)
+    /// are never truncated. Counts characters and never splits a multi-byte
+    /// UTF-8 codepoint (CJK display width is out of scope). `N = 0` renders every
+    /// non-empty cell as a bare `…`. Lossy. Default: unlimited.
+    #[arg(long = "max-cell-width", global = true, value_name = "N")]
+    pub max_cell_width: Option<usize>,
+
+    /// Render f16 / f32 / f64 values with exactly N fractional digits in every
+    /// format (`NaN`/`Infinity` are unaffected). Uses `format!`-style
+    /// round-half-to-even. Lossy. Default: full round-trip precision.
+    #[arg(long = "float-precision", global = true, value_name = "N")]
+    pub float_precision: Option<usize>,
 
     /// Comma-separated list of columns to include.
     #[arg(long, global = true, value_delimiter = ',')]

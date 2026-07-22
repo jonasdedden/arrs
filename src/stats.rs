@@ -41,9 +41,9 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use futures::StreamExt as _;
 
 use crate::Result;
-use crate::cli::BinaryFormat;
 use crate::dataset::{ColumnStats, Dataset, ScanOptions};
 use crate::error::Error;
+use crate::output::RenderOptions;
 use crate::output::value::table_cell;
 
 /// Maximum number of distinct values tracked exactly per column. Once a column
@@ -799,7 +799,9 @@ fn format_temporal(dt: &DataType, v: i64) -> Option<String> {
         }
         _ => return None,
     };
-    table_cell(array.as_ref(), 0, BinaryFormat::None).ok()
+    // Stat min/max are pre-rendered to strings here, so no truncation or
+    // float-precision option applies; use plain defaults.
+    table_cell(array.as_ref(), 0, RenderOptions::default()).ok()
 }
 
 fn timestamp_array(unit: TimeUnit, tz: Option<&str>, v: i64) -> ArrayRef {

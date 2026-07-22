@@ -20,10 +20,11 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::StreamExt;
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Format, FreqSort, LanceArgs};
+use crate::cli::{Format, FreqSort, LanceArgs};
 use crate::commands::common::make_stdout_writer;
 use crate::dataset::{self, Dataset, ScanOptions};
 use crate::error::Error;
+use crate::output::RenderOptions;
 use crate::output::value::csv_cell;
 
 /// Distinct-value ceiling. Accumulation is O(cardinality) in memory, so a
@@ -43,7 +44,7 @@ pub async fn run(
     limit: Option<u64>,
     sort: FreqSort,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     filter: Option<&str>,
     lance: &LanceArgs,
 ) -> Result<()> {
@@ -58,12 +59,12 @@ pub async fn run(
         limit,
         sort,
         filter,
-        binary_format,
+        render,
         MAX_DISTINCT,
     )
     .await?;
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&batch.schema())?;
     writer.write_batch(&batch)?;
     writer.finish()?;
@@ -80,7 +81,7 @@ async fn compute(
     limit: Option<u64>,
     sort: FreqSort,
     filter: Option<&str>,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     max_distinct: usize,
 ) -> Result<RecordBatch> {
     let schema = ds.arrow_schema();
@@ -100,7 +101,7 @@ async fn compute(
     // (numeric / lexical) order rather than its rendered string.
     let ordering = OrderMode::of(field.data_type());
 
-    let counts = accumulate(ds, column, filter, binary_format, max_distinct).await?;
+    let counts = accumulate(ds, column, filter, render, max_distinct).await?;
     build_batch(counts, sort, limit, ordering)
 }
 
@@ -119,7 +120,7 @@ async fn accumulate(
     ds: &dyn Dataset,
     column: &str,
     filter: Option<&str>,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     max_distinct: usize,
 ) -> Result<Counts> {
     let projection = [column.to_string()];
@@ -138,7 +139,7 @@ async fn accumulate(
         let array = batch.column(0);
         for row in 0..array.len() {
             total += 1;
-            match csv_cell(array.as_ref(), row, binary_format)? {
+            match csv_cell(array.as_ref(), row, render)? {
                 None => null += 1,
                 Some(key) => match present.get_mut(&key) {
                     Some(c) => *c += 1,
@@ -503,7 +504,7 @@ mod tests {
         {
             let mut w = make_writer(
                 format,
-                BinaryFormat::None,
+                RenderOptions::default(),
                 TableStyle::Plain,
                 Cursor::new(&mut out),
             );
@@ -537,7 +538,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -563,7 +564,7 @@ mod tests {
             None,
             FreqSort::Value,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -590,7 +591,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -609,7 +610,7 @@ mod tests {
             Some(2),
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -636,7 +637,7 @@ mod tests {
             Some(4),
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -657,7 +658,7 @@ mod tests {
             None,
             FreqSort::Count,
             Some("label = 'spam'"),
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -679,7 +680,7 @@ mod tests {
             None,
             FreqSort::Count,
             Some("label = 'nope'"),
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -699,7 +700,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -734,7 +735,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -775,7 +776,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -810,7 +811,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -828,7 +829,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -849,7 +850,7 @@ mod tests {
             None,
             FreqSort::Value,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -883,7 +884,7 @@ mod tests {
             None,
             FreqSort::Value,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             MAX_DISTINCT,
         )
         .await
@@ -906,7 +907,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             2,
         )
         .await
@@ -926,7 +927,7 @@ mod tests {
             None,
             FreqSort::Count,
             None,
-            BinaryFormat::None,
+            RenderOptions::default(),
             3,
         )
         .await

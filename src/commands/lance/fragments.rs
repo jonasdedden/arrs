@@ -4,10 +4,11 @@ use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Format, LanceArgs};
+use crate::cli::{Format, LanceArgs};
 use crate::commands::common::{human_bytes, make_stdout_writer};
 use crate::dataset::{self, FragmentInfo};
 use crate::error::Error;
+use crate::output::RenderOptions;
 
 pub async fn run(
     input: &str,
@@ -15,7 +16,7 @@ pub async fn run(
     verbose: bool,
     no_size: bool,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let lance_caps = ds.lance().ok_or_else(|| Error::NotLance {
@@ -35,7 +36,7 @@ pub async fn run(
     let (schema, columns) = build_batch(&fragments, human_size, include_files);
     let batch = RecordBatch::try_new(schema.clone(), columns)?;
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&schema)?;
     writer.write_batch(&batch)?;
     writer.finish()?;

@@ -1,7 +1,8 @@
 use crate::Result;
-use crate::cli::{BinaryFormat, Format, LanceArgs};
+use crate::cli::{Format, LanceArgs};
 use crate::commands::common::make_stdout_writer;
 use crate::dataset;
+use crate::output::RenderOptions;
 use crate::projection;
 use crate::stats;
 
@@ -15,7 +16,7 @@ use crate::stats;
 pub async fn run(
     input: &str,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
     filter: Option<&str>,
@@ -28,7 +29,7 @@ pub async fn run(
     let column_stats = stats::compute(ds.as_ref(), projection.as_deref(), filter).await?;
     let batch = stats::to_record_batch(&column_stats)?;
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&stats::output_schema())?;
     writer.write_batch(&batch)?;
     writer.finish()?;

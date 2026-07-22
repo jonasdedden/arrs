@@ -4,17 +4,18 @@ use arrow_array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UI
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Format};
+use crate::cli::Format;
 use crate::commands::common::make_stdout_writer;
 use crate::dataset;
 use crate::error::Error;
+use crate::output::RenderOptions;
 
 pub async fn run(
     input: &str,
     branch: Option<&str>,
     tagged_only: bool,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
 ) -> Result<()> {
     let ds = dataset::open(input, None).await?;
     let lance = ds.lance().ok_or_else(|| Error::NotLance {
@@ -63,7 +64,7 @@ pub async fn run(
         vec![version_col, timestamp_col, tag_col, message_col],
     )?;
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&schema)?;
     writer.write_batch(&batch)?;
     writer.finish()?;

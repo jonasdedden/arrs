@@ -14,10 +14,11 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Value, json};
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Format, LanceArgs};
+use crate::cli::{Format, LanceArgs};
 use crate::commands::common::{human_bytes, make_stdout_writer};
 use crate::dataset::{self, FragmentInfo, IndexInfo, VersionInfo};
 use crate::error::Error;
+use crate::output::RenderOptions;
 
 /// Fragment count at/above which the "many small fragments" hint may fire.
 const MANY_FRAGMENTS: u64 = 100;
@@ -70,7 +71,7 @@ pub async fn run(
     lance: &LanceArgs,
     no_size: bool,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let caps = ds.lance().ok_or_else(|| Error::NotLance {
@@ -108,7 +109,7 @@ pub async fn run(
 
     match format {
         Format::Jsonl => println!("{}", stat_json(&stat)),
-        _ => print_table(&stat, format, binary_format)?,
+        _ => print_table(&stat, format, render)?,
     }
 
     // In table mode, trail with a conservative plain-language compaction hint.
@@ -252,7 +253,7 @@ fn stat_json(s: &DatasetStat) -> Value {
 
 /// Render the summary as a two-column key/value table (also used for csv, which
 /// mirrors the table's human-readable pairs — use jsonl for raw numbers).
-fn print_table(s: &DatasetStat, format: Format, binary_format: BinaryFormat) -> Result<()> {
+fn print_table(s: &DatasetStat, format: Format, render: RenderOptions) -> Result<()> {
     let rows = table_rows(s);
     let schema = Arc::new(Schema::new(vec![
         Field::new("metric", DataType::Utf8, false),
@@ -266,7 +267,7 @@ fn print_table(s: &DatasetStat, format: Format, binary_format: BinaryFormat) -> 
     ));
     let batch = RecordBatch::try_new(schema.clone(), vec![metric_col, value_col])?;
 
-    let mut writer = make_stdout_writer(format, binary_format);
+    let mut writer = make_stdout_writer(format, render);
     writer.start(&schema)?;
     writer.write_batch(&batch)?;
     writer.finish()?;

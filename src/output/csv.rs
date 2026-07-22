@@ -4,22 +4,21 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 
 use crate::Result;
-use crate::cli::BinaryFormat;
-use crate::output::{RowWriter, value};
+use crate::output::{RenderOptions, RowWriter, value};
 
 pub struct CsvRowWriter<W: Write> {
     writer: Option<Box<csv::Writer<W>>>,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
 }
 
 impl<W: Write> CsvRowWriter<W> {
-    pub fn new(writer: W, binary_format: BinaryFormat) -> Self {
+    pub fn new(writer: W, render: RenderOptions) -> Self {
         let inner = csv::WriterBuilder::new()
             .has_headers(false)
             .from_writer(writer);
         Self {
             writer: Some(Box::new(inner)),
-            binary_format,
+            render,
         }
     }
 }
@@ -42,9 +41,7 @@ impl<W: Write> RowWriter for CsvRowWriter<W> {
             row_buf.clear();
             for col in 0..num_cols {
                 let arr = batch.column(col);
-                row_buf.push(
-                    value::csv_cell(arr.as_ref(), row, self.binary_format)?.unwrap_or_default(),
-                );
+                row_buf.push(value::csv_cell(arr.as_ref(), row, self.render)?.unwrap_or_default());
             }
             w.write_record(&row_buf)?;
         }
