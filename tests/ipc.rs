@@ -13,7 +13,7 @@ use std::io::Cursor;
 
 use arrow::ipc::reader::StreamReader;
 use arrow_array::RecordBatch;
-use arrs::cli::{BinaryFormat, Cli, Command, FilterArg, Format, LanceArgs};
+use arrs::cli::{BinaryFormat, Cli, Command, FilterArg, Format, LanceArgs, RowIdArgs};
 use arrs::commands::dispatch;
 use arrs::dataset::{self, ScanOptions};
 use arrs::output::make_writer;
@@ -41,6 +41,7 @@ fn cli(format: Format, command: Command) -> Cli {
         max_list_items: None,
         max_cell_width: None,
         float_precision: None,
+        no_progress: false,
         command,
     }
 }
@@ -174,6 +175,7 @@ fn ipc_rejected_on_diff() {
             Format::Ipc,
             Command::Diff {
                 input: "does-not-matter".to_string(),
+                other: None,
                 from: Some(0),
                 from_tag: None,
                 to: None,
@@ -198,6 +200,7 @@ fn ipc_rejects_value_rendering_flags() {
             Command::Cat {
                 inputs: vec!["does-not-matter".to_string()],
                 filter: FilterArg::default(),
+                row_ids: RowIdArgs::default(),
                 lance: LanceArgs::default(),
             },
         );
@@ -216,6 +219,7 @@ fn ipc_rejects_value_rendering_flags() {
             Command::Cat {
                 inputs: vec!["does-not-matter".to_string()],
                 filter: FilterArg::default(),
+                row_ids: RowIdArgs::default(),
                 lance: LanceArgs::default(),
             },
         );

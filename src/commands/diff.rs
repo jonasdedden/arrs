@@ -50,6 +50,7 @@ pub async fn run(
         Some(Format::Csv) => return Err(Error::DiffFormatUnsupported { format: "csv" }),
         Some(Format::Table) => return Err(Error::DiffFormatUnsupported { format: "table" }),
         Some(Format::Json) => return Err(Error::DiffFormatUnsupported { format: "json" }),
+        Some(Format::Ipc) => return Err(Error::DiffFormatUnsupported { format: "ipc" }),
     };
 
     // Generic mode: no Lance selectors on either input (enforced in dispatch).

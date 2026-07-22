@@ -459,5 +459,9 @@ fn command_rejecting_ipc(cmd: &Command) -> Option<&'static str> {
         Command::Rowcount { .. } => Some("rowcount"),
         Command::Schema { .. } => Some("schema"),
         Command::Diff { .. } => Some("diff"),
+        Command::Blob { .. } => Some("blob"),
+        // Defensive: `completions` already hard-errors on any `--format` via
+        // `command_ignoring_format`; the arm only satisfies exhaustiveness.
+        Command::Completions { .. } => Some("completions"),
     }
 }
