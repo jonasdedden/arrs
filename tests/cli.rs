@@ -2238,7 +2238,6 @@ fn diff_single_dataset_without_selector_errors() {
     );
 }
 
-
 // -------------------- --with-row-id / --with-row-addr (#21) --------------------
 //
 // These drive the real binary end-to-end (parsing jsonl stdout) so they exercise

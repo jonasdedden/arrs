@@ -35,7 +35,7 @@ pub async fn run(
     let inputs = expand_inputs(inputs)?;
 
     let mut opened = Vec::with_capacity(inputs.len());
-    for path in inputs {
+    for path in &inputs {
         let ds = dataset::open(path, Some(lance)).await?;
         // Row-id support is per-dataset: `cat` may one day concatenate mixed
         // formats, so verify every input can honour the flags, not just the

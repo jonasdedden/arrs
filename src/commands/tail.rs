@@ -190,8 +190,8 @@ mod tests {
             &ScanProgress::disabled(),
             RowIds::default(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         assert_eq!(collect_ids(&batches), vec![7, 8, 9]);
     }
 
@@ -209,8 +209,8 @@ mod tests {
             &ScanProgress::disabled(),
             RowIds::default(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         assert!(collect_ids(&batches).is_empty());
     }
 }

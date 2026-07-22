@@ -30,6 +30,7 @@ use crate::cli::LanceArgs;
 use crate::dataset::{self, BlobRead};
 use crate::error::Error;
 use crate::indices;
+use crate::row_id::RowIds;
 
 /// Bytes pulled per streaming read from a blob-encoded cell. Bounds peak memory
 /// for arbitrarily large payloads.
@@ -93,7 +94,9 @@ pub async fn run(
     } else {
         // Plain binary column: validate the type, then take the single row.
         ensure_binary_type(column, field.data_type())?;
-        let batch = ds.take(&[idx], Some(&[column.to_string()])).await?;
+        let batch = ds
+            .take(&[idx], Some(&[column.to_string()]), RowIds::default())
+            .await?;
         let array = batch.column(0);
         match binary_cell_bytes(array, 0) {
             Some(bytes) => Payload::Bytes(bytes),
