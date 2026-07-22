@@ -41,12 +41,15 @@ pub async fn run(
     format: Option<Format>,
 ) -> Result<Outcome> {
     // Like the version diff, this emits a summary shape rather than rows, so
-    // only the human default and `jsonl` are meaningful; reject csv/table.
+    // only the human default and `jsonl` are meaningful; reject csv/table/json
+    // (and, as there, RenderOptions is not threaded — the report has no
+    // float or list cells).
     let as_json = match format {
         None => false,
         Some(Format::Jsonl) => true,
         Some(Format::Csv) => return Err(Error::DiffFormatUnsupported { format: "csv" }),
         Some(Format::Table) => return Err(Error::DiffFormatUnsupported { format: "table" }),
+        Some(Format::Json) => return Err(Error::DiffFormatUnsupported { format: "json" }),
     };
 
     // Generic mode: no Lance selectors on either input (enforced in dispatch).
