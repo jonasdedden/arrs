@@ -10,10 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--with-row-id` / `--with-row-addr` output columns (Lance only) for `cat`,
-  `head`, `tail`, `take`, and `sample`: append the row's stable identity
-  (`_rowid`) and/or its physical address (`_rowaddr`, `fragment_id << 32 |
-  offset`) as `UInt64` columns, after the projected columns (`_rowid` before
-  `_rowaddr`). Emitted whenever the flag is set regardless of
+  `head`, `tail`, `take`, and `sample`: append the row's identity (`_rowid`,
+  stable across deletions — and across compaction only for datasets written with
+  Lance's stable row ids enabled) and/or its physical address
+  (`_rowaddr` = `fragment_id << 32 | offset`) as `UInt64` columns, after the
+  projected columns (`_rowid` before `_rowaddr`). Emitted whenever the flag is
+  set regardless of
   `--columns`/`--exclude-columns`; explicitly excluding a requested pseudo-column
   errors with a hint to drop the flag. Values are consistent across commands for
   the same rows (scan and `take` paths alike) and stay correct across deletions

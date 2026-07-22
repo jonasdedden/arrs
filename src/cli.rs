@@ -102,9 +102,11 @@ pub struct FilterArg {
 /// place.
 #[derive(Debug, Clone, Args, Default)]
 pub struct RowIdArgs {
-    /// (Lance only) Append a `_rowid` column: the stable per-row identity that
-    /// survives compaction and follows a row across versions. Always emitted
-    /// regardless of --columns/--exclude-columns.
+    /// (Lance only) Append a `_rowid` column: the per-row identity. Stable
+    /// across deletions; stable across compaction only for datasets written with
+    /// Lance's stable row ids enabled (off by default, in which case `_rowid` is
+    /// address-based and is rewritten by compaction). Always emitted regardless
+    /// of --columns/--exclude-columns.
     #[arg(long = "with-row-id")]
     pub with_row_id: bool,
 

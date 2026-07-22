@@ -35,8 +35,18 @@ pub async fn run(
     let inputs = expand_inputs(inputs)?;
 
     let mut opened = Vec::with_capacity(inputs.len());
-    for path in &inputs {
-        opened.push(dataset::open(path, Some(lance)).await?);
+    for path in inputs {
+        let ds = dataset::open(path, Some(lance)).await?;
+        // Row-id support is per-dataset: `cat` may one day concatenate mixed
+        // formats, so verify every input can honour the flags, not just the
+        // first. (`prepare_row_id_columns` below re-checks the first for the
+        // exclude/strip reconciliation; the duplicate is a cheap bool.)
+        if row_ids.any() && !ds.supports_row_id() {
+            return Err(Error::RowIdUnsupported {
+                path: ds.origin().to_string(),
+            });
+        }
+        opened.push(ds);
     }
 
     let first_schema = opened[0].arrow_schema();

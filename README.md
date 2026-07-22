@@ -316,7 +316,7 @@ Lance gives every row two 64-bit identifiers that no schema column carries. The
 
 | Flag               | Column      | Meaning |
 | ------------------ | ----------- | ------- |
-| `--with-row-id`    | `_rowid`    | The row's **stable identity**. It follows the row across dataset versions and survives compaction, so it is the identifier to use for correlating rows across versions or cross-referencing another tool's output. |
+| `--with-row-id`    | `_rowid`    | The row's identity. **Stable across deletions**; **stable across compaction only for datasets written with Lance's stable row ids enabled** (`enable_stable_row_ids`, off by default). With the default (address-based) row ids, `_rowid` equals `_rowaddr` and is *rewritten* by compaction, so treat it as stable-across-deletions only unless you know the dataset opted in. |
 | `--with-row-addr`  | `_rowaddr`  | The row's **physical address** in the *current* version: `(fragment_id << 32) | offset_in_fragment`. It pinpoints where the row lives on disk but is *not* stable across a rewrite/compaction. |
 
 Both are `UInt64`, and both may be combined. They are **appended** to the output
@@ -337,10 +337,10 @@ set, regardless of `--columns` / `--exclude-columns`. Explicitly excluding a
 requested pseudo-column (`--with-row-id --exclude-columns _rowid`) is
 contradictory and errors with a hint to just drop the flag.
 
-Values are **consistent across commands** for the same rows — `head`, `take`,
+Values are **consistent across commands** for the same version — `head`, `take`,
 and `sample` all report the same `_rowid` for a given row — and remain correct
-after deletions, so the surviving `_rowid`s of a compacted-away or deleted range
-are simply non-contiguous.
+after deletions, so the surviving `_rowid`s of a deleted range are simply
+non-contiguous.
 
 These flags are Lance-only; a future non-Lance backend that cannot provide row
 identity rejects them with `not supported by this format`.

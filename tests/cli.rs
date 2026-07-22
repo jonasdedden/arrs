@@ -29,7 +29,10 @@ use lance_index::IndexType;
 use lance_index::scalar::ScalarIndexParams;
 use tokio::runtime::Runtime;
 
-use common::{tempdir, write_full, write_simple, write_simple_with_deletions, write_with_binary};
+use common::{
+    tempdir, write_full, write_simple, write_simple_two_versions, write_simple_with_deletions,
+    write_struct, write_with_binary,
+};
 
 fn runtime() -> Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -2432,4 +2435,90 @@ fn cat_with_row_id_covers_every_row() {
     let rows = jsonl_rows(&run_cli(&["cat", "--with-row-id"], &p));
     let ids: Vec<u64> = rows.iter().map(|r| u64_field(r, "_rowid")).collect();
     assert_eq!(ids, vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn take_with_nested_projection_and_row_id() {
+    // Exercises `assemble_take_output`: a nested dotted projection is flattened
+    // to leaf columns *and* the pseudo-column is appended in canonical position.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_struct(&tmp, "st").await });
+    let rows = jsonl_rows(&run_cli(
+        &[
+            "take",
+            "--indices",
+            "0,2",
+            "--columns",
+            "meta.user.id,id",
+            "--with-row-id",
+        ],
+        &p,
+    ));
+    // Nested leaf, then the other projected column, then `_rowid` last.
+    assert_eq!(row_keys(&rows[0]), vec!["meta.user.id", "id", "_rowid"]);
+    let row_ids: Vec<u64> = rows.iter().map(|r| u64_field(r, "_rowid")).collect();
+    assert_eq!(row_ids, vec![0, 2]);
+    // The flattened nested leaf still carries the right values (ids 10, 30).
+    let user_ids: Vec<i64> = rows
+        .iter()
+        .map(|r| r["meta.user.id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(user_ids, vec![10, 30]);
+}
+
+#[test]
+fn row_id_is_stable_across_versions() {
+    // Row ids assigned in v1 are not renumbered by a later append (the new rows
+    // land in a fresh fragment), so reading either version reports the same
+    // `_rowid` for the v1 rows.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple_two_versions(&tmp, "s").await });
+
+    let v1 = jsonl_rows(&run_cli(&["cat", "--version", "1", "--with-row-id"], &p));
+    let v2 = jsonl_rows(&run_cli(&["cat", "--version", "2", "--with-row-id"], &p));
+
+    let pairs = |rows: &[serde_json::Value]| -> Vec<(i64, u64)> {
+        rows.iter()
+            .map(|r| (r["id"].as_i64().unwrap(), u64_field(r, "_rowid")))
+            .collect()
+    };
+    let v1_pairs = pairs(&v1);
+    assert_eq!(v1_pairs.len(), 5);
+    // Every (id, _rowid) pair from v1 reappears unchanged among v2's rows.
+    let v2_pairs = pairs(&v2);
+    for pair in &v1_pairs {
+        assert!(
+            v2_pairs.contains(pair),
+            "v1 pair {pair:?} missing from v2 {v2_pairs:?}"
+        );
+    }
+}
+
+#[test]
+fn row_id_columns_render_in_csv() {
+    // UInt64 pseudo-columns must pass CSV schema validation and render as plain
+    // integers, with the header carrying them in appended order.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &[
+            "head",
+            "-n",
+            "1",
+            "--format",
+            "csv",
+            "--with-row-id",
+            "--with-row-addr",
+        ],
+        &p,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut lines = stdout.lines();
+    assert_eq!(lines.next().unwrap(), "id,name,score,_rowid,_rowaddr");
+    assert_eq!(lines.next().unwrap(), "1,alice,10.5,0,0");
 }

@@ -473,6 +473,12 @@ impl Dataset for LanceDataset {
         let system = row_ids.columns();
         let mut requested = base_cols.clone();
         requested.extend(system.iter().map(|s| (*s).to_string()));
+        // `from_columns` calls `Schema::project_preserve_system_columns`, which
+        // Lance internally `.unwrap()`s — a bad column name would panic rather
+        // than error. That is safe here because every entry is either a real
+        // column already validated by the projection resolver, or a `_rowid` /
+        // `_rowaddr` name produced by `RowIds` (never user text), so the
+        // projection can never fail.
         let req = ProjectionRequest::from_columns(requested.iter(), self.inner.schema());
         let batch = self
             .inner
