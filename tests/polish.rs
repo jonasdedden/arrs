@@ -77,6 +77,24 @@ fn completions_generate_for_every_shell() {
 }
 
 #[test]
+fn completions_include_every_command_including_lance() {
+    // Grouping the top-level `--help` hides subcommands from the *help command
+    // list* only (issue #50); completions are generated from a separate,
+    // un-hidden `Cli::command()`, so every command — general, Lance, and Setup —
+    // must still be completable. `fragments` (Lance) and `blob`/`diff` (general,
+    // format-agnostic) are the canaries.
+    for shell in ["bash", "zsh", "fish"] {
+        let script = stdout_of(&run(&["completions", shell]));
+        for cmd in ["fragments", "search", "blob", "diff", "completions"] {
+            assert!(
+                script.contains(cmd),
+                "{shell} completions missing command `{cmd}`:\n{script}"
+            );
+        }
+    }
+}
+
+#[test]
 fn completions_rejects_unknown_shell() {
     let out = run(&["completions", "notashell"]);
     assert!(!out.status.success(), "unknown shell should be rejected");

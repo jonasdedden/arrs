@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -527,4 +527,158 @@ pub enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
+}
+
+// ── Subcommand grouping in `arrs --help` (issue #50) ─────────────────────────
+//
+// Follow-up to #47's option grouping. clap 4.6 renders *every* subcommand in a
+// single flat "Commands:" block (`HelpTemplate::write_subcommands`); there is no
+// native multi-section subcommand grouping — `subcommand_help_heading` only
+// renames that one heading, and there is no per-subcommand `help_heading`.
+//
+// Mechanisms evaluated against real clap 4.6 behavior:
+//
+//   (a) A custom top-level `help_template`. The template engine exposes a single
+//       `{subcommands}` tag that dumps *all* visible subcommands as one block —
+//       it cannot inject a heading mid-block — so a template alone cannot split
+//       them. It is, however, the vehicle for (c).
+//   (b) `display_order` clustering. Lets us order commands (Lance last) but still
+//       under one "Commands:" heading, so it fails the "≥2 clearly-headed
+//       sections" bar on its own.
+//   (c) Hide the real subcommands and hand-render the whole grouped command list.
+//       CHOSEN. `hide = true` is display-only: parsing, `arrs <cmd> --help`, and
+//       `arrs help <cmd>` are all unaffected. With every subcommand hidden,
+//       clap's automatic "Commands:" block is suppressed (`has_visible_
+//       subcommands()` → false) while the flattened #47 option groups still
+//       render via `{all-args}`. We splice a pre-rendered, grouped, headed
+//       command list into the template ahead of `{all-args}`.
+//
+// COMPLETIONS SAFETY (the #14 hazard): `hide = true` drops a subcommand from
+// `clap_complete` output and from `arrs help` discoverability. We avoid that by
+// never hiding on the derive: the completion generator builds its own pristine
+// `Cli::command()` (see `commands/completions.rs`), and the hiding here is
+// applied only to the throwaway command used for parsing/help in
+// `command_grouped`. So all commands stay in every shell's completions — the
+// `polish.rs` suite asserts a Lance command (`fragments`) is present — and
+// `arrs help <cmd>` / `arrs <cmd> --help` keep working. Trade-off: the grouped
+// list is plain text, so command names/headings are not ANSI-styled the way
+// clap's own block is (immaterial when piped, which is how it is tested).
+//
+// Maintainability: the section membership lists below are the single source of
+// truth for both rendering and the exhaustiveness test in `tests/help.rs`, which
+// fails if any subcommand is unassigned or assigned twice — the sections cannot
+// silently rot when a new command is added.
+
+/// Format-agnostic subcommands: they operate on any supported backend, so they
+/// carry no "(Lance)" annotation in the README command table. `diff` lives here
+/// (its dataset-vs-dataset mode is primary; the Lance version mode is documented
+/// in `diff`'s own help) and so does `blob` (it reads plain binary columns
+/// generically). Declaration order is the render order under "Commands:".
+pub const GENERAL_COMMANDS: &[&str] = &[
+    "cat", "head", "tail", "take", "sample", "rowcount", "stats", "freq", "schema", "diff", "blob",
+];
+
+/// Lance-specific subcommands — the README "(Lance)" rows.
+pub const LANCE_COMMANDS: &[&str] = &[
+    "stat",
+    "versions",
+    "branches",
+    "tags",
+    "indices",
+    "index-stats",
+    "fragments",
+    "search",
+];
+
+/// Setup / tooling subcommands, including clap's auto-generated `help`.
+pub const SETUP_COMMANDS: &[&str] = &["completions", "help"];
+
+/// The `--help` command sections in render order: `(heading, member names)`.
+pub const COMMAND_SECTIONS: &[(&str, &[&str])] = &[
+    ("Commands", GENERAL_COMMANDS),
+    ("Lance commands", LANCE_COMMANDS),
+    ("Setup", SETUP_COMMANDS),
+];
+
+impl Cli {
+    /// Parse `std::env::args`, rendering `--help` with grouped subcommands.
+    ///
+    /// Drop-in replacement for `clap::Parser::parse` (used by `main`); the only
+    /// difference is the grouped top-level help built by [`Cli::command_grouped`].
+    pub fn parse_grouped() -> Self {
+        let mut matches = Self::command_grouped().get_matches();
+        // `from_arg_matches` only fails on an internal derive/matches mismatch,
+        // which cannot happen here; mirror clap's own `parse()` by exiting.
+        Self::from_arg_matches_mut(&mut matches).unwrap_or_else(|err| err.exit())
+    }
+
+    /// The top-level [`clap::Command`] with its subcommands grouped into the
+    /// `--help` sections defined by [`COMMAND_SECTIONS`]. See the module comment
+    /// above for the mechanism and the rejected alternatives.
+    pub fn command_grouped() -> clap::Command {
+        let mut cmd = Self::command();
+        // Materialize clap's auto `help` subcommand (and the help/version flags)
+        // now, so we can read `help`'s one-liner for the Setup section and hide
+        // it alongside the real subcommands below. `build()` is idempotent
+        // (guarded by an internal "Built" flag), so the rebuild inside
+        // `get_matches` is a no-op and the hidden state set here survives.
+        cmd.build();
+        let sections = render_command_sections(&cmd);
+        // Hide every subcommand so clap's single automatic "Commands:" block is
+        // suppressed; our grouped `sections` (spliced into the template) become
+        // the only command list. Hiding is display-only — see the module comment.
+        //
+        // With no *visible* subcommands, clap also drops the `<COMMAND>` token
+        // from the auto-generated usage line, so we restore it via
+        // `override_usage` (a command is still required — hiding does not change
+        // parsing).
+        cmd.mut_subcommands(|sc| sc.hide(true))
+            .override_usage("arrs [OPTIONS] <COMMAND>")
+            .help_template(grouped_help_template(&sections))
+    }
+}
+
+/// clap's default top-level help template with the pre-rendered command
+/// `sections` spliced in ahead of `{all-args}`. With every subcommand hidden,
+/// `{all-args}` renders only the (still #47-grouped) global options. Assembled
+/// by concatenation rather than `format!` so a brace in any one-liner can never
+/// be read as a format specifier; clap echoes an unknown `{token}` verbatim.
+fn grouped_help_template(sections: &str) -> String {
+    let mut template =
+        String::from("{before-help}{about-with-newline}\n{usage-heading} {usage}\n\n");
+    template.push_str(sections);
+    template.push_str("\n\n{all-args}{after-help}");
+    template
+}
+
+/// Render the grouped, headed command list for the top-level `--help`, pulling
+/// each one-liner straight from the built command's subcommand `about` text (so
+/// they never drift from the derive). All sections share one column width so the
+/// names line up as a single table, matching clap's own alignment.
+fn render_command_sections(cmd: &clap::Command) -> String {
+    let longest = COMMAND_SECTIONS
+        .iter()
+        .flat_map(|(_, names)| names.iter())
+        .map(|name| name.len())
+        .max()
+        .unwrap_or(0);
+    let mut out = String::new();
+    for (section_idx, (heading, names)) in COMMAND_SECTIONS.iter().enumerate() {
+        if section_idx > 0 {
+            out.push_str("\n\n");
+        }
+        out.push_str(heading);
+        out.push(':');
+        for name in names.iter() {
+            let about = cmd
+                .get_subcommands()
+                .find(|sub| sub.get_name() == *name)
+                .and_then(|sub| sub.get_about())
+                .map(|about| about.to_string())
+                .unwrap_or_default();
+            // clap indents subcommands two spaces and pads to the longest name.
+            out.push_str(&format!("\n  {name:<longest$}  {about}"));
+        }
+    }
+    out
 }

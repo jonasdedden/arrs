@@ -2,11 +2,12 @@ use std::process::ExitCode;
 
 use arrs::cli::Cli;
 use arrs::commands::Outcome;
-use clap::Parser;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // `parse_grouped` is `Cli::parse` with the top-level `--help` subcommands
+    // rendered in grouped sections (issue #50); see `cli::command_grouped`.
+    let cli = Cli::parse_grouped();
     // Exit codes follow `diff(1)`: 0 = success/identical, 1 = `diff` found
     // differences, 2 = error. Note this makes the error code 2 for *every*
     // command (it was 1 before `diff` landed), so 1 unambiguously means

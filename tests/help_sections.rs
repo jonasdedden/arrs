@@ -9,6 +9,9 @@
 
 use std::process::Command;
 
+use arrs::cli::{COMMAND_SECTIONS, Cli};
+use clap::CommandFactory;
+
 /// Run `arrs <args...> --help` and return stdout.
 fn help(args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_arrs"))
@@ -131,6 +134,136 @@ fn search_help_groups_options_into_sections() {
         assert!(
             default.iter().any(|f| f == own),
             "search: {own} should stay ungrouped in `Options` (got {default:?})"
+        );
+    }
+}
+
+// ── Grouped subcommand sections in the top-level `--help` (issue #50) ─────────
+
+/// The command names listed under a top-level `--help` heading, in render order.
+///
+/// Command rows are `  name   one-liner`, so — unlike option rows — their first
+/// token does not start with `-`; that is how they are told apart from the flag
+/// rows the option sections contain.
+fn commands_under(help_text: &str, heading: &str) -> Vec<String> {
+    let mut in_section = false;
+    let mut names = Vec::new();
+    for line in help_text.lines() {
+        let is_heading =
+            !line.starts_with(char::is_whitespace) && line.ends_with(':') && !line.is_empty();
+        if is_heading {
+            in_section = line.trim_end_matches(':') == heading;
+            continue;
+        }
+        if in_section
+            && let Some(first) = line.split_whitespace().next()
+            && !first.starts_with('-')
+        {
+            names.push(first.to_string());
+        }
+    }
+    names
+}
+
+#[test]
+fn top_level_help_groups_subcommands_into_sections() {
+    let text = help(&[]); // `arrs --help`
+    let general = commands_under(&text, "Commands");
+    let lance = commands_under(&text, "Lance commands");
+    let setup = commands_under(&text, "Setup");
+
+    // Representative membership. `diff` and `blob` are format-agnostic (issue #50
+    // taxonomy) and must sit with the general commands, never with Lance.
+    for c in ["cat", "diff", "blob", "schema"] {
+        assert!(
+            general.contains(&c.to_string()),
+            "`{c}` should be a general command (got {general:?})"
+        );
+    }
+    for c in ["fragments", "search", "versions", "stat"] {
+        assert!(
+            lance.contains(&c.to_string()),
+            "`{c}` should be a Lance command (got {lance:?})"
+        );
+    }
+    assert!(
+        setup.contains(&"completions".to_string()),
+        "`completions` should be under `Setup` (got {setup:?})"
+    );
+
+    // No Lance command leaks into the general section.
+    for c in &lance {
+        assert!(
+            !general.contains(c),
+            "Lance command `{c}` leaked into the general `Commands` section"
+        );
+    }
+
+    // Section order: format-agnostic first, Lance second, Setup last.
+    let at = |h: &str| text.find(&format!("{h}:")).unwrap_or(usize::MAX);
+    assert!(
+        at("Commands") < at("Lance commands"),
+        "`Commands` must render before `Lance commands`"
+    );
+    assert!(
+        at("Lance commands") < at("Setup"),
+        "`Lance commands` must render before `Setup`"
+    );
+}
+
+/// The maintainability guard: every subcommand — including clap's auto-generated
+/// `help` — must be assigned to exactly one section, so a newly added command
+/// fails this test until it is placed. Also rejects stale entries that name a
+/// command which no longer exists.
+#[test]
+fn every_subcommand_is_assigned_to_exactly_one_section() {
+    let mut cmd = Cli::command();
+    cmd.build(); // materializes the auto `help` subcommand, so it is covered too.
+
+    for sub in cmd.get_subcommands() {
+        let name = sub.get_name();
+        let count = COMMAND_SECTIONS
+            .iter()
+            .filter(|(_, names)| names.contains(&name))
+            .count();
+        assert_eq!(
+            count, 1,
+            "subcommand `{name}` must be in exactly one --help section, found in {count}"
+        );
+    }
+
+    let real: Vec<&str> = cmd.get_subcommands().map(|s| s.get_name()).collect();
+    for (heading, names) in COMMAND_SECTIONS {
+        for name in *names {
+            assert!(
+                real.contains(name),
+                "section `{heading}` lists `{name}`, which is not a real subcommand"
+            );
+        }
+    }
+}
+
+#[test]
+fn help_subcommand_for_a_command_is_unaffected() {
+    // `arrs help cat` and `arrs cat --help` must still resolve to cat's own help,
+    // unchanged by the top-level grouping (subcommands are only hidden from the
+    // top-level command list, not from parsing).
+    for args in [["help", "cat"], ["cat", "--help"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_arrs"))
+            .args(args)
+            .output()
+            .expect("spawn arrs binary");
+        assert!(out.status.success(), "`arrs {}` failed", args.join(" "));
+        let text = String::from_utf8(out.stdout).expect("help output is UTF-8");
+        assert!(
+            text.contains("Concatenate one or more datasets"),
+            "`arrs {}` missing cat's about line:\n{text}",
+            args.join(" ")
+        );
+        assert!(
+            text.contains("Usage: arrs cat"),
+            "`arrs {}` missing cat usage:\n{text}",
+            args.join(" ")
         );
     }
 }
