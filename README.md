@@ -749,15 +749,17 @@ Guards and edge cases:
   redirect stdout).
 - A null cell, an out-of-range index, or a non-binary column is a hard error
   (non-zero exit) — and with `-o`, no partial or empty file is left behind (the
-  payload is written to a temp file and atomically renamed on success).
-- The global `--format`, `--columns`/`--exclude-columns` and `--binary-format`
-  flags don't apply to `blob` (its output is raw bytes, not rows) and are
+  payload is written to a temp file and atomically renamed on success). A
+  successful `-o` overwrites any existing file at the target path.
+- `blob` output is raw bytes, not rows, so the global `--format` flag is
+  rejected (a hard error, like `rowcount`/`schema`). `--columns`/
+  `--exclude-columns` and `--binary-format` don't apply either and are silently
   ignored. The Lance `--branch`/`--version`/`--tag`/`--as-of` selectors work as
   usual.
 
-> Note on blob-encoded columns: the legacy (v1) blob encoding does not preserve
-> the difference between a null cell and a zero-length payload, so both are
-> reported as a null cell (nothing is extracted).
+> Note on blob-encoded columns: Lance's blob descriptors do not preserve the
+> difference between a null cell and a zero-length payload (a null is encoded as
+> `size == 0`), so both are reported as a null cell and nothing is extracted.
 
 ### `--indices` grammar
 

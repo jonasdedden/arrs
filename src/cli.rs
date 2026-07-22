@@ -191,9 +191,10 @@ pub enum Command {
     ///
     /// Works on plain `Binary`/`LargeBinary`/`FixedSizeBinary`/`BinaryView`
     /// columns and on Lance blob-encoded columns (the latter streamed with
-    /// bounded memory). Writes the raw bytes to `-o <file>`, or to stdout when
-    /// `-o` is omitted (refused when stdout is a terminal — redirect or use
-    /// `-o`). The global `--format`/`--columns`/`--binary-format` flags do not
+    /// bounded memory). Writes the raw bytes to `-o <file>` (overwriting any
+    /// existing file), or to stdout when `-o` is omitted (refused when stdout is
+    /// a terminal — redirect or use `-o`). Output is raw bytes, not rows, so the
+    /// global `--format` flag is rejected; `--columns`/`--binary-format` do not
     /// apply and are ignored.
     Blob {
         input: String,
@@ -204,8 +205,9 @@ pub enum Command {
         /// like `take`, so `-1` is the last row).
         #[arg(long, allow_hyphen_values = true)]
         index: i64,
-        /// Write the payload to this file instead of stdout. On success the file
-        /// is written atomically; a failed extraction leaves no partial file.
+        /// Write the payload to this file instead of stdout, overwriting any
+        /// existing file. On success the file is written atomically; a failed
+        /// extraction leaves no partial file.
         #[arg(short = 'o', long, value_name = "FILE")]
         output: Option<PathBuf>,
         #[command(flatten)]

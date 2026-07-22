@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   negative-index semantics). Works on plain `Binary`/`LargeBinary`/
   `FixedSizeBinary`/`BinaryView` columns via `Dataset::take`, and on Lance
   blob-encoded columns (`lance-encoding:blob`) via the streaming blob API
-  (`take_blobs`), which are detected from field metadata and read in bounded
+  (`take_blobs_by_indices`), which are detected from field metadata and read in bounded
   chunks so multi-GB payloads never materialize in memory. Refuses to write raw
   bytes to a terminal, errors (non-zero exit) on null cells / out-of-range
   indices / non-binary columns, and never leaves a partial file on `-o` (temp

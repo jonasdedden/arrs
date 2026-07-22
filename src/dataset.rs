@@ -163,9 +163,6 @@ pub trait LanceCapabilities: Send + Sync {
 /// Lance's `BlobFile` in the Lance adapter.
 #[async_trait]
 pub trait BlobRead: Send {
-    /// Total payload size in bytes.
-    fn size(&self) -> u64;
-
     /// Read up to `max` bytes from the current cursor, advancing it. Returns an
     /// empty buffer once the payload is exhausted.
     async fn read_chunk(&mut self, max: usize) -> Result<Vec<u8>>;

@@ -182,9 +182,11 @@ async fn run_command(
             output,
             lance,
         } => {
-            // `blob` emits raw bytes, not row-shaped output, so the global
-            // --format/--columns/--binary-format flags don't apply; per the
-            // metadata-command precedent they are silently ignored, not rejected.
+            // `blob` emits raw bytes, not row-shaped output. `--format` is a hard
+            // error via `command_ignoring_format` above (the rowcount/schema
+            // precedent for non-row-shaped commands); `--columns`/`--binary-format`
+            // don't apply either but are silently ignored, matching how metadata
+            // commands treat inapplicable projection/rendering flags.
             blob::run(&input, &column, index, output.as_deref(), &lance).await
         }
         Command::Rowcount {
@@ -342,6 +344,7 @@ fn command_ignoring_format(cmd: &Command) -> Option<&'static str> {
     match cmd {
         Command::Rowcount { .. } => Some("rowcount"),
         Command::Schema { .. } => Some("schema"),
+        Command::Blob { .. } => Some("blob"),
         _ => None,
     }
 }

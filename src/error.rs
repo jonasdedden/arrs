@@ -177,7 +177,9 @@ pub enum Error {
     )]
     NotBinaryColumn { column: String, data_type: String },
 
-    #[error("cell at index {index} in column '{column}' is null; nothing to extract")]
+    #[error(
+        "cell at index {index} in column '{column}' is null (or empty — blob encoding cannot distinguish them); nothing to extract"
+    )]
     NullBlobCell { column: String, index: u64 },
 
     #[error(

@@ -787,13 +787,13 @@ impl LanceCapabilities for LanceDataset {
             .take_blobs_by_indices(&[index], column)
             .await
             .map_err(|e| Error::Lance(Box::new(e)))?;
-        // Null-cell detection across both blob encodings:
-        // - v2 nulls the descriptor children, so `take_blobs` drops the row and
-        //   returns an empty vec.
-        // - v1 (legacy) does not preserve the null/empty distinction: a null (or
-        //   genuinely empty) cell collapses to a zero-length descriptor.
-        // Either way there is nothing to extract, so report `None` — the command
-        // turns that into a clear error and writes no (empty) file.
+        // Null-cell detection. Lance's blob descriptors do not preserve the
+        // null-vs-empty distinction: a null cell is encoded as a zero-length
+        // payload (`size == 0`), the same as a genuinely empty blob. Depending on
+        // the descriptor shape `take_blobs` either drops the row (empty vec) or
+        // hands back a zero-length `BlobFile`; both mean "nothing to extract", so
+        // filter them out and report `None`. The command turns that into a clear
+        // error and writes no (empty) file.
         Ok(blobs
             .pop()
             .filter(|f| f.size() > 0)
@@ -868,10 +868,6 @@ struct LanceBlobReader(BlobFile);
 
 #[async_trait]
 impl BlobRead for LanceBlobReader {
-    fn size(&self) -> u64 {
-        self.0.size()
-    }
-
     async fn read_chunk(&mut self, max: usize) -> Result<Vec<u8>> {
         let bytes = self
             .0

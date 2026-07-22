@@ -101,6 +101,36 @@ async fn write_blob_fixture(tmp: &TempDir, name: &str) -> PathBuf {
     path
 }
 
+/// A ~2.5 MiB deterministic payload. Larger than the command's 1 MiB streaming
+/// chunk, so extracting it exercises the multi-chunk read/write loop (three
+/// chunks: 1 MiB, 1 MiB, ~0.5 MiB, then EOF). Generated from a formula so the
+/// byte-identical comparison stays exact without embedding the bytes.
+fn large_payload() -> Vec<u8> {
+    (0..2_621_440u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect()
+}
+
+/// Write a blob-encoded dataset whose single row carries [`large_payload`].
+async fn write_large_blob_fixture(tmp: &TempDir, name: &str) -> PathBuf {
+    let mut meta = HashMap::new();
+    meta.insert(BLOB_META_KEY.to_string(), "true".to_string());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new("blob", DataType::LargeBinary, true).with_metadata(meta),
+    ]));
+    let payload = large_payload();
+    let blob = LargeBinaryArray::from_opt_vec(vec![Some(payload.as_slice())]);
+    let ids = UInt64Array::from(vec![0u64]);
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(ids), Arc::new(blob)]).unwrap();
+
+    let path = tmp.path().join(name);
+    let uri = path.to_string_lossy().into_owned();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    LanceInner::write(iter, uri.as_str(), None).await.unwrap();
+    path
+}
+
 /// Spawn the real binary: `arrs blob <args...> <path>`.
 fn run_blob(args: &[&str], path: &Path) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_arrs"))
@@ -294,5 +324,67 @@ fn blob_column_null_cell_errors() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("is null"), "stderr: {stderr}");
+    assert!(!dest.exists());
+}
+
+#[test]
+fn blob_column_multi_mib_streams_byte_identical() {
+    // Locks in the multi-chunk streaming path: a ~2.5 MiB blob payload must
+    // extract byte-for-byte, proving the 1 MiB chunk loop reads and writes every
+    // chunk (and terminates) rather than truncating at the first read.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_large_blob_fixture(&tmp, "bigblob").await });
+    let dest = tmp.path().join("big-out.bin");
+    let out = run_blob(
+        &[
+            "--column",
+            "blob",
+            "--index",
+            "0",
+            "-o",
+            dest.to_str().unwrap(),
+        ],
+        &p,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let written = std::fs::read(&dest).unwrap();
+    let expected = large_payload();
+    assert_eq!(written.len(), expected.len());
+    assert_eq!(written, expected);
+}
+
+// ------------------------------ global flags -------------------------------
+
+#[test]
+fn format_flag_is_rejected() {
+    // `blob` emits raw bytes, not rows, so `--format` is a hard error (the same
+    // precedent `rowcount`/`schema` follow), not a silent no-op.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_binary_fixture(&tmp, "bin").await });
+    let dest = tmp.path().join("out.bin");
+    let out = run_blob(
+        &[
+            "--column",
+            "payload",
+            "--index",
+            "0",
+            "--format",
+            "csv",
+            "-o",
+            dest.to_str().unwrap(),
+        ],
+        &p,
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not applicable to 'blob'"),
+        "stderr: {stderr}"
+    );
+    // The flag is rejected before any extraction, so no output file is created.
     assert!(!dest.exists());
 }

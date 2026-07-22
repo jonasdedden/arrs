@@ -11,9 +11,11 @@
 //!   multi-GB payload never needs to be materialized at once.
 //!
 //! The global `--format`, `--columns`/`--exclude-columns` and `--binary-format`
-//! flags do not apply here (the output is raw bytes, not row-shaped): following
-//! the repo precedent for metadata commands, they are silently ignored rather
-//! than rejected.
+//! flags do not apply here (the output is raw bytes, not row-shaped).
+//! `--format` is a hard error, handled by `command_ignoring_format` in the
+//! dispatcher — the same precedent `rowcount`/`schema` follow for commands that
+//! don't emit rows. `--columns`/`--binary-format` are silently ignored, matching
+//! how metadata commands treat inapplicable projection/rendering flags.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
