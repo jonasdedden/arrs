@@ -13,6 +13,8 @@ so other Arrow-backed formats can be added without touching commands or output.
 - Project columns with `--columns` / `--exclude-columns`.
 - Choose how binary payloads are rendered: hidden behind a placeholder, hex
   (`\xHH`), or base64.
+- Extract a single binary/blob cell's raw bytes to a file with `blob` —
+  including Lance blob-encoded columns, streamed with bounded memory.
 - ISO-8601 timestamps, `NaN`/`Infinity` handled, nested lists & structs
   preserved in JSONL.
 
@@ -56,6 +58,7 @@ cargo run --release -- <command> [args…]
 | `fragments` | (Lance) List fragments with row, deletion, file, and size info.    |
 | `search`   | (Lance) Nearest-neighbor vector search; appends a `_distance` column.|
 | `diff`     | Diff two datasets (schema + rows), or two versions of one Lance dataset. |
+| `blob`     | Extract one cell's binary/blob payload to a file or stdout.          |
 
 ## Remote datasets
 
@@ -714,6 +717,49 @@ $ arrs head -n 1 --binary-format base64 dataset.lance
 
 The placeholder semantics apply recursively: binary nested inside a struct or
 list is also rendered as `BINARY_DATA` under the default.
+
+### Extracting binary payloads with `blob`
+
+The rendering options above keep terminal output sane; `blob` does the opposite
+job — it pulls one cell's *actual bytes* out so you can open or pipe them. Point
+it at a binary column and a single row index, and write the payload to a file:
+
+```sh
+# Extract image 42 to a file and open it.
+arrs blob --column image --index 42 -o out.png dataset.lance
+
+# No -o: raw bytes go to stdout (redirect them — a terminal is refused).
+arrs blob --column audio --index 7 dataset.lance > clip.wav
+
+# Negative indices count from the end, exactly like `take`.
+arrs blob --column image --index -1 -o last.png dataset.lance
+```
+
+`--index` takes a single value with the same negative-index semantics as `take`
+(`-1` is the last row). Extraction works on plain `Binary`/`LargeBinary`/
+`FixedSizeBinary`/`BinaryView` columns and on Lance **blob-encoded** columns
+(`lance-encoding:blob`) — the latter are streamed through Lance's blob API in
+bounded chunks, so multi-GB payloads never have to be held in memory. arrs
+detects the encoding from the column's field metadata and picks the path
+automatically.
+
+Guards and edge cases:
+
+- Writing raw bytes to an interactive terminal is refused (pass `-o <file>` or
+  redirect stdout).
+- A null cell, an out-of-range index, or a non-binary column is a hard error
+  (non-zero exit) — and with `-o`, no partial or empty file is left behind (the
+  payload is written to a temp file and atomically renamed on success). A
+  successful `-o` overwrites any existing file at the target path.
+- `blob` output is raw bytes, not rows, so the global `--format` flag is
+  rejected (a hard error, like `rowcount`/`schema`). `--columns`/
+  `--exclude-columns` and `--binary-format` don't apply either and are silently
+  ignored. The Lance `--branch`/`--version`/`--tag`/`--as-of` selectors work as
+  usual.
+
+> Note on blob-encoded columns: Lance's blob descriptors do not preserve the
+> difference between a null cell and a zero-length payload (a null is encoded as
+> `size == 0`), so both are reported as a null cell and nothing is extracted.
 
 ### `--indices` grammar
 

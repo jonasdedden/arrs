@@ -11,14 +11,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use futures::{StreamExt, TryStreamExt};
 use lance::Dataset as InnerLance;
-use lance::dataset::ProjectionRequest;
+use lance::dataset::{BlobFile, ProjectionRequest};
 use lance_index::DatasetIndexExt as _;
 use lance_index::vector::DIST_COL;
 
 use crate::Result;
 use crate::cli::LanceArgs;
 use crate::dataset::{
-    BatchStream, BranchInfo, CheckoutState, Dataset, FragmentInfo, IndexInfo, IndexStats,
+    BatchStream, BlobRead, BranchInfo, CheckoutState, Dataset, FragmentInfo, IndexInfo, IndexStats,
     LanceCapabilities, MAIN_BRANCH, ScanOptions, TagInfo, VectorSearchParams, VectorSearchResult,
     VersionInfo,
 };
@@ -771,6 +771,35 @@ impl LanceCapabilities for LanceDataset {
         })
     }
 
+    fn is_blob_column(&self, column: &str) -> bool {
+        self.inner
+            .schema()
+            .field(column)
+            .map(|f| f.is_blob())
+            .unwrap_or(false)
+    }
+
+    async fn open_blob(&self, column: &str, index: u64) -> Result<Option<Box<dyn BlobRead>>> {
+        // `take_blobs*` is defined on `Arc<Dataset>`; cloning the inner handle is
+        // cheap (Lance datasets are internally reference-counted).
+        let ds = Arc::new(self.inner.clone());
+        let mut blobs = ds
+            .take_blobs_by_indices(&[index], column)
+            .await
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        // Null-cell detection. Lance's blob descriptors do not preserve the
+        // null-vs-empty distinction: a null cell is encoded as a zero-length
+        // payload (`size == 0`), the same as a genuinely empty blob. Depending on
+        // the descriptor shape `take_blobs` either drops the row (empty vec) or
+        // hands back a zero-length `BlobFile`; both mean "nothing to extract", so
+        // filter them out and report `None`. The command turns that into a clear
+        // error and writes no (empty) file.
+        Ok(blobs
+            .pop()
+            .filter(|f| f.size() > 0)
+            .map(|f| Box::new(LanceBlobReader(f)) as Box<dyn BlobRead>))
+    }
+
     async fn index_stats(&self) -> Result<Vec<IndexStats>> {
         let indices = self
             .inner
@@ -828,6 +857,24 @@ impl LanceDataset {
                 .filter_map(|id| schema.field_by_id(*id))
                 .any(|f| f.name == column)
         }))
+    }
+}
+
+/// Streaming adapter over a Lance [`BlobFile`], exposing the format-agnostic
+/// [`BlobRead`] interface. `BlobFile` keeps its own cursor (behind interior
+/// mutability), so `read_up_to` advances it and reads bounded chunks from the
+/// backing object store on demand — no whole-payload buffering.
+struct LanceBlobReader(BlobFile);
+
+#[async_trait]
+impl BlobRead for LanceBlobReader {
+    async fn read_chunk(&mut self, max: usize) -> Result<Vec<u8>> {
+        let bytes = self
+            .0
+            .read_up_to(max)
+            .await
+            .map_err(|e| Error::Lance(Box::new(e)))?;
+        Ok(bytes.to_vec())
     }
 }
 

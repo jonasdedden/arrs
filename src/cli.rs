@@ -187,6 +187,33 @@ pub enum Command {
         lance: LanceArgs,
     },
 
+    /// Extract one cell's binary/blob payload to a file or stdout.
+    ///
+    /// Works on plain `Binary`/`LargeBinary`/`FixedSizeBinary`/`BinaryView`
+    /// columns and on Lance blob-encoded columns (the latter streamed with
+    /// bounded memory). Writes the raw bytes to `-o <file>` (overwriting any
+    /// existing file), or to stdout when `-o` is omitted (refused when stdout is
+    /// a terminal — redirect or use `-o`). Output is raw bytes, not rows, so the
+    /// global `--format` flag is rejected; `--columns`/`--binary-format` do not
+    /// apply and are ignored.
+    Blob {
+        input: String,
+        /// Binary or Lance blob-encoded column to extract from.
+        #[arg(long)]
+        column: String,
+        /// Row index to extract (single value; negatives count from the end,
+        /// like `take`, so `-1` is the last row).
+        #[arg(long, allow_hyphen_values = true)]
+        index: i64,
+        /// Write the payload to this file instead of stdout, overwriting any
+        /// existing file. On success the file is written atomically; a failed
+        /// extraction leaves no partial file.
+        #[arg(short = 'o', long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        #[command(flatten)]
+        lance: LanceArgs,
+    },
+
     /// Print the number of rows.
     Rowcount {
         input: String,

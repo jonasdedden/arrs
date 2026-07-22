@@ -1,3 +1,4 @@
+mod blob;
 mod cat;
 mod common;
 mod diff;
@@ -174,6 +175,20 @@ async fn run_command(
             )
             .await
         }
+        Command::Blob {
+            input,
+            column,
+            index,
+            output,
+            lance,
+        } => {
+            // `blob` emits raw bytes, not row-shaped output. `--format` is a hard
+            // error via `command_ignoring_format` above (the rowcount/schema
+            // precedent for non-row-shaped commands); `--columns`/`--binary-format`
+            // don't apply either but are silently ignored, matching how metadata
+            // commands treat inapplicable projection/rendering flags.
+            blob::run(&input, &column, index, output.as_deref(), &lance).await
+        }
         Command::Rowcount {
             input,
             filter,
@@ -329,6 +344,7 @@ fn command_ignoring_format(cmd: &Command) -> Option<&'static str> {
     match cmd {
         Command::Rowcount { .. } => Some("rowcount"),
         Command::Schema { .. } => Some("schema"),
+        Command::Blob { .. } => Some("blob"),
         _ => None,
     }
 }

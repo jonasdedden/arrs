@@ -172,6 +172,28 @@ pub enum Error {
     #[error("in {path}: {error}")]
     DiffColumn { path: String, error: Box<Error> },
 
+    #[error(
+        "column '{column}' has type {data_type}, which blob cannot extract; supported columns are Binary/LargeBinary/FixedSizeBinary/BinaryView or a Lance blob-encoded column"
+    )]
+    NotBinaryColumn { column: String, data_type: String },
+
+    #[error(
+        "cell at index {index} in column '{column}' is null (or empty — blob encoding cannot distinguish them); nothing to extract"
+    )]
+    NullBlobCell { column: String, index: u64 },
+
+    #[error(
+        "refusing to write raw binary to a terminal; pass -o <file> or redirect stdout (e.g. `> out.bin`)"
+    )]
+    BlobToTty,
+
+    #[error("failed to write blob output to {path}")]
+    BlobOutput {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("arrow error")]
     Arrow(#[from] arrow_schema::ArrowError),
 
