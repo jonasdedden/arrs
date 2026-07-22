@@ -64,7 +64,11 @@ pub async fn compute(
     projection: Option<&[String]>,
     filter: Option<&str>,
 ) -> Result<Vec<ColumnStats>> {
-    let options = ScanOptions { projection, filter };
+    let options = ScanOptions {
+        projection,
+        filter,
+        ..Default::default()
+    };
 
     // Give the backend a chance to answer from metadata instead of scanning.
     //

@@ -12,7 +12,7 @@ use arrow_array::{
     StructArray,
 };
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
-use arrs::cli::{BinaryFormat, Cli, Command, FilterArg, Format, LanceArgs};
+use arrs::cli::{BinaryFormat, Cli, Command, FilterArg, Format, LanceArgs, RowIdArgs};
 use arrs::commands::dispatch;
 use arrs::dataset;
 use arrs::dataset::ScanOptions;
@@ -20,6 +20,7 @@ use arrs::indices;
 use arrs::output::make_writer;
 use arrs::output::table::TableStyle;
 use arrs::projection;
+use arrs::row_id::RowIds;
 use futures::StreamExt;
 use lance::Dataset as LanceInner;
 use lance::dataset::NewColumnTransform;
@@ -28,7 +29,10 @@ use lance_index::IndexType;
 use lance_index::scalar::ScalarIndexParams;
 use tokio::runtime::Runtime;
 
-use common::{tempdir, write_full, write_simple, write_with_binary};
+use common::{
+    tempdir, write_full, write_simple, write_simple_two_versions, write_simple_with_deletions,
+    write_struct, write_with_binary,
+};
 
 fn runtime() -> Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -75,6 +79,7 @@ async fn collect_cat(
             let options = ScanOptions {
                 projection: proj.as_deref(),
                 filter: None,
+                ..Default::default()
             };
             let mut stream = ds.scan(&options).await?;
             while let Some(b) = stream.next().await {
@@ -150,7 +155,7 @@ async fn collect_tail(
         if take_n > 0 {
             let start = rowcount - take_n;
             let idx: Vec<u64> = (start..rowcount).collect();
-            let batch = ds.take(&idx, None).await?;
+            let batch = ds.take(&idx, None, RowIds::default()).await?;
             w.write_batch(&batch)?;
         }
         w.finish()?;
@@ -179,7 +184,7 @@ async fn collect_take(
         );
         w.start(&projected)?;
         if !indices.is_empty() {
-            let batch = ds.take(&indices, None).await?;
+            let batch = ds.take(&indices, None, RowIds::default()).await?;
             w.write_batch(&batch)?;
         }
         w.finish()?;
@@ -211,7 +216,9 @@ async fn collect_take_cols(
         );
         w.start(&projected)?;
         if !indices.is_empty() {
-            let batch = ds.take(&indices, proj.as_deref()).await?;
+            let batch = ds
+                .take(&indices, proj.as_deref(), RowIds::default())
+                .await?;
             w.write_batch(&batch)?;
         }
         w.finish()?;
@@ -248,7 +255,7 @@ async fn collect_sample(
         );
         w.start(&projected)?;
         if !pool.is_empty() {
-            let batch = ds.take(&pool, None).await?;
+            let batch = ds.take(&pool, None, RowIds::default()).await?;
             w.write_batch(&batch)?;
         }
         w.finish()?;
@@ -274,6 +281,7 @@ async fn collect_scan_where(input: &str, filter: &str) -> arrs::Result<String> {
         let options = ScanOptions {
             projection: None,
             filter: Some(filter),
+            ..Default::default()
         };
         let mut stream = ds.scan(&options).await?;
         while let Some(batch) = stream.next().await {
@@ -840,6 +848,7 @@ fn nested_projection_header_matches_scan_output() {
         let options = ScanOptions {
             projection: proj.as_deref(),
             filter: None,
+            ..Default::default()
         };
         let mut stream = ds.scan(&options).await.unwrap();
         let batch = stream.next().await.unwrap().unwrap();
@@ -936,6 +945,7 @@ fn where_on_projected_away_column_still_filters() {
         let options = ScanOptions {
             projection: proj.as_deref(),
             filter: Some("score > 1.5"),
+            ..Default::default()
         };
         use arrow_array::Array as _;
         let mut stream = ds.scan(&options).await.unwrap();
@@ -1100,6 +1110,7 @@ fn empty_cat_via_dispatch_errors() {
             command: Command::Cat {
                 inputs: vec![],
                 filter: FilterArg::default(),
+                row_ids: RowIdArgs::default(),
                 lance: arrs::cli::LanceArgs::default(),
             },
         };
@@ -1206,6 +1217,7 @@ fn invalid_where_predicate_on_scan_errors() {
         let options = ScanOptions {
             projection: None,
             filter: Some("not_a_column > 1"),
+            ..Default::default()
         };
         // `scan` yields a non-Debug `BatchStream` on success, so match rather
         // than `unwrap_err`.
@@ -1248,6 +1260,7 @@ fn take_with_where_is_rejected() {
                 filter: FilterArg {
                     predicate: Some("id > 1".to_string()),
                 },
+                row_ids: RowIdArgs::default(),
                 lance: LanceArgs::default(),
             },
         };
@@ -2223,4 +2236,288 @@ fn diff_single_dataset_without_selector_errors() {
         stderr.contains("needs either a second dataset"),
         "unexpected stderr: {stderr}"
     );
+}
+
+// -------------------- --with-row-id / --with-row-addr (#21) --------------------
+//
+// These drive the real binary end-to-end (parsing jsonl stdout) so they exercise
+// clap parsing, the projection interaction, and the adapter's scan/take paths.
+
+/// Parse a successful command's jsonl stdout into one JSON object per row. The
+/// `preserve_order` serde_json feature keeps object keys in column order, so the
+/// key sequence doubles as an assertion on column position.
+fn jsonl_rows(out: &std::process::Output) -> Vec<serde_json::Value> {
+    assert!(
+        out.status.success(),
+        "command failed, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("valid jsonl row"))
+        .collect()
+}
+
+fn row_keys(row: &serde_json::Value) -> Vec<String> {
+    row.as_object()
+        .expect("row is a json object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+fn u64_field(row: &serde_json::Value, name: &str) -> u64 {
+    row[name]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{name} missing/not u64 in {row}"))
+}
+
+#[test]
+fn with_row_id_appends_rowid_last_and_counts_from_zero() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let rows = jsonl_rows(&run_cli(&["head", "-n", "5", "--with-row-id"], &p));
+    assert_eq!(rows.len(), 5);
+    // Column position: `_rowid` is appended *after* the schema columns.
+    assert_eq!(row_keys(&rows[0]), vec!["id", "name", "score", "_rowid"]);
+    // Fresh single-fragment dataset: row ids equal the row offsets 0..5.
+    let ids: Vec<u64> = rows.iter().map(|r| u64_field(r, "_rowid")).collect();
+    assert_eq!(ids, vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn both_flags_append_rowid_then_rowaddr() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let rows = jsonl_rows(&run_cli(
+        &["head", "-n", "1", "--with-row-id", "--with-row-addr"],
+        &p,
+    ));
+    // Order is projected columns, then `_rowid`, then `_rowaddr`.
+    assert_eq!(
+        row_keys(&rows[0]),
+        vec!["id", "name", "score", "_rowid", "_rowaddr"]
+    );
+}
+
+#[test]
+fn row_ids_consistent_across_commands_and_non_contiguous_after_deletion() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple_with_deletions(&tmp, "s").await });
+
+    // After deleting ids 2 and 4, the survivors are ids 1, 3, 5.
+    let head = jsonl_rows(&run_cli(&["head", "-n", "3", "--with-row-id"], &p));
+    let take = jsonl_rows(&run_cli(
+        &["take", "--indices", "0,1,2", "--with-row-id"],
+        &p,
+    ));
+
+    let pairs = |rows: &[serde_json::Value]| -> Vec<(i64, u64)> {
+        rows.iter()
+            .map(|r| (r["id"].as_i64().unwrap(), u64_field(r, "_rowid")))
+            .collect()
+    };
+    let head_pairs = pairs(&head);
+    // Same rows via a different command produce the same `_rowid`s.
+    assert_eq!(head_pairs, pairs(&take));
+
+    let row_ids: Vec<u64> = head_pairs.iter().map(|(_, r)| *r).collect();
+    // The deletion left a gap: the surviving row ids are non-contiguous. Three
+    // rows spanning a range wider than 2 proves at least one id was removed.
+    assert!(
+        row_ids.windows(2).all(|w| w[0] < w[1]),
+        "row ids should be strictly increasing: {row_ids:?}"
+    );
+    let span = row_ids.last().unwrap() - row_ids.first().unwrap();
+    assert!(
+        span > (row_ids.len() as u64 - 1),
+        "expected a gap in {row_ids:?}"
+    );
+}
+
+#[test]
+fn with_row_id_survives_column_projection() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let rows = jsonl_rows(&run_cli(
+        &["head", "-n", "2", "--columns", "id", "--with-row-id"],
+        &p,
+    ));
+    // Only the projected column, then the appended pseudo-column.
+    assert_eq!(row_keys(&rows[0]), vec!["id", "_rowid"]);
+    let ids: Vec<u64> = rows.iter().map(|r| u64_field(r, "_rowid")).collect();
+    assert_eq!(ids, vec![0, 1]);
+}
+
+#[test]
+fn with_row_id_survives_exclude_of_other_columns() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let rows = jsonl_rows(&run_cli(
+        &[
+            "head",
+            "-n",
+            "1",
+            "--exclude-columns",
+            "name",
+            "--with-row-id",
+        ],
+        &p,
+    ));
+    assert_eq!(row_keys(&rows[0]), vec!["id", "score", "_rowid"]);
+}
+
+#[test]
+fn excluding_rowid_while_flagged_is_a_clean_error() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &[
+            "head",
+            "--format",
+            "csv",
+            "--exclude-columns",
+            "_rowid",
+            "--with-row-id",
+        ],
+        &p,
+    );
+    assert_clean_failure(&out, "cannot exclude the system column '_rowid'");
+}
+
+#[test]
+fn tail_with_row_id_reports_trailing_row_ids() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let rows = jsonl_rows(&run_cli(&["tail", "-n", "2", "--with-row-id"], &p));
+    let ids: Vec<u64> = rows.iter().map(|r| u64_field(r, "_rowid")).collect();
+    // Last two of five rows → offsets 3 and 4.
+    assert_eq!(ids, vec![3, 4]);
+    assert_eq!(row_keys(&rows[0]), vec!["id", "name", "score", "_rowid"]);
+}
+
+#[test]
+fn sample_with_row_id_matches_each_rows_offset() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let rows = jsonl_rows(&run_cli(
+        &["sample", "-n", "3", "--seed", "1", "--with-row-id"],
+        &p,
+    ));
+    assert_eq!(rows.len(), 3);
+    // In this fixture id `i` sits at offset `i - 1`; the sampled `_rowid` must be
+    // that row's own offset regardless of which rows the sampler drew.
+    for row in &rows {
+        let id = row["id"].as_i64().unwrap();
+        assert_eq!(u64_field(row, "_rowid"), (id - 1) as u64);
+    }
+}
+
+#[test]
+fn take_with_row_addr_reports_addresses() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let rows = jsonl_rows(&run_cli(
+        &["take", "--indices", "0,2", "--with-row-addr"],
+        &p,
+    ));
+    assert_eq!(row_keys(&rows[0]), vec!["id", "name", "score", "_rowaddr"]);
+    // Single fragment 0: the row address equals the row offset.
+    let addrs: Vec<u64> = rows.iter().map(|r| u64_field(r, "_rowaddr")).collect();
+    assert_eq!(addrs, vec![0, 2]);
+}
+
+#[test]
+fn cat_with_row_id_covers_every_row() {
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let rows = jsonl_rows(&run_cli(&["cat", "--with-row-id"], &p));
+    let ids: Vec<u64> = rows.iter().map(|r| u64_field(r, "_rowid")).collect();
+    assert_eq!(ids, vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn take_with_nested_projection_and_row_id() {
+    // Exercises `assemble_take_output`: a nested dotted projection is flattened
+    // to leaf columns *and* the pseudo-column is appended in canonical position.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_struct(&tmp, "st").await });
+    let rows = jsonl_rows(&run_cli(
+        &[
+            "take",
+            "--indices",
+            "0,2",
+            "--columns",
+            "meta.user.id,id",
+            "--with-row-id",
+        ],
+        &p,
+    ));
+    // Nested leaf, then the other projected column, then `_rowid` last.
+    assert_eq!(row_keys(&rows[0]), vec!["meta.user.id", "id", "_rowid"]);
+    let row_ids: Vec<u64> = rows.iter().map(|r| u64_field(r, "_rowid")).collect();
+    assert_eq!(row_ids, vec![0, 2]);
+    // The flattened nested leaf still carries the right values (ids 10, 30).
+    let user_ids: Vec<i64> = rows
+        .iter()
+        .map(|r| r["meta.user.id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(user_ids, vec![10, 30]);
+}
+
+#[test]
+fn row_id_is_stable_across_versions() {
+    // Row ids assigned in v1 are not renumbered by a later append (the new rows
+    // land in a fresh fragment), so reading either version reports the same
+    // `_rowid` for the v1 rows.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple_two_versions(&tmp, "s").await });
+
+    let v1 = jsonl_rows(&run_cli(&["cat", "--version", "1", "--with-row-id"], &p));
+    let v2 = jsonl_rows(&run_cli(&["cat", "--version", "2", "--with-row-id"], &p));
+
+    let pairs = |rows: &[serde_json::Value]| -> Vec<(i64, u64)> {
+        rows.iter()
+            .map(|r| (r["id"].as_i64().unwrap(), u64_field(r, "_rowid")))
+            .collect()
+    };
+    let v1_pairs = pairs(&v1);
+    assert_eq!(v1_pairs.len(), 5);
+    // Every (id, _rowid) pair from v1 reappears unchanged among v2's rows.
+    let v2_pairs = pairs(&v2);
+    for pair in &v1_pairs {
+        assert!(
+            v2_pairs.contains(pair),
+            "v1 pair {pair:?} missing from v2 {v2_pairs:?}"
+        );
+    }
+}
+
+#[test]
+fn row_id_columns_render_in_csv() {
+    // UInt64 pseudo-columns must pass CSV schema validation and render as plain
+    // integers, with the header carrying them in appended order.
+    let tmp = tempdir();
+    let p = runtime().block_on(async { write_simple(&tmp, "s").await });
+    let out = run_cli(
+        &[
+            "head",
+            "-n",
+            "1",
+            "--format",
+            "csv",
+            "--with-row-id",
+            "--with-row-addr",
+        ],
+        &p,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut lines = stdout.lines();
+    assert_eq!(lines.next().unwrap(), "id,name,score,_rowid,_rowaddr");
+    assert_eq!(lines.next().unwrap(), "1,alice,10.5,0,0");
 }

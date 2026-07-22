@@ -126,6 +126,14 @@ pub enum Error {
     #[error("'{command}' is only valid for Lance datasets ({path})")]
     NotLance { command: &'static str, path: String },
 
+    #[error("--with-row-id/--with-row-addr are not supported by this format ({path})")]
+    RowIdUnsupported { path: String },
+
+    #[error(
+        "cannot exclude the system column '{column}' while {flag} is set; drop {flag} instead (the pseudo-column is only ever emitted because the flag requests it)"
+    )]
+    RowIdExcluded { column: String, flag: &'static str },
+
     #[error(
         "tag '{tag}' is on branch '{tag_branch}', not '{requested_branch}'; remove --branch or pass --branch {tag_branch}"
     )]

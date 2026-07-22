@@ -12,6 +12,7 @@ use futures::Stream;
 use crate::Result;
 use crate::cli::LanceArgs;
 use crate::error::Error;
+use crate::row_id::RowIds;
 
 /// The name Lance's implicit default branch is surfaced under. Lance stores it
 /// as `None` internally; the adapter and commands normalise that to `"main"`.
@@ -24,9 +25,9 @@ pub type BatchStream = Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>;
 ///
 /// Passed as a struct (rather than a growing list of positional parameters) so
 /// that new knobs can be added without churning every call site. Today it
-/// carries a column projection and an optional row predicate; row-id emission
-/// is expected to land here next. All fields are borrowed, so the struct is
-/// cheap to `Copy` and construct inline at each command.
+/// carries a column projection, an optional row predicate, and which Lance
+/// system pseudo-columns to append. The borrowed fields keep the struct cheap
+/// to `Copy` and construct inline at each command.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScanOptions<'a> {
     /// Columns to include, in the given order. `None` means all columns.
@@ -35,6 +36,10 @@ pub struct ScanOptions<'a> {
     /// applied *before* any positional selection the command performs. `None`
     /// means no filtering.
     pub filter: Option<&'a str>,
+    /// Which `_rowid` / `_rowaddr` pseudo-columns to append to each batch. These
+    /// are Lance-only; adapters that don't support them reject a set flag via
+    /// [`Dataset::supports_row_id`] before the scan is opened.
+    pub row_ids: RowIds,
 }
 
 /// Format-agnostic dataset view used by every command.
@@ -62,8 +67,23 @@ pub trait Dataset: Send + Sync + Debug {
     async fn scan(&self, options: &ScanOptions<'_>) -> Result<BatchStream>;
 
     /// Materialise a `RecordBatch` containing only the rows at the given indices,
-    /// in the order given. `indices` must all be < `count_rows()`.
-    async fn take(&self, indices: &[u64], projection: Option<&[String]>) -> Result<RecordBatch>;
+    /// in the order given. `indices` must all be < `count_rows()`. `row_ids`
+    /// selects the `_rowid` / `_rowaddr` pseudo-columns to append, matching the
+    /// order and shape the streaming `scan` produces.
+    async fn take(
+        &self,
+        indices: &[u64],
+        projection: Option<&[String]>,
+        row_ids: RowIds,
+    ) -> Result<RecordBatch>;
+
+    /// True when this format can emit the `_rowid` / `_rowaddr` pseudo-columns
+    /// (`--with-row-id` / `--with-row-addr`). Defaults to `false`; a backend that
+    /// tracks row identity overrides it. Commands check this before scanning so a
+    /// flag on an unsupporting format fails with a clear "not supported" error.
+    fn supports_row_id(&self) -> bool {
+        false
+    }
 
     /// Returns `Some(...)` when this dataset is backed by a format that supports
     /// Lance-specific operations (versions, branches, indices). The default

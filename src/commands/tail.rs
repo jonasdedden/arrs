@@ -5,11 +5,12 @@ use futures::StreamExt;
 
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
-use crate::commands::common::{make_stdout_writer, project_arrow_schema};
+use crate::commands::common::{make_stdout_writer, prepare_row_id_columns, project_arrow_schema};
 use crate::commands::progress::ScanProgress;
 use crate::dataset::{self, Dataset, ScanOptions};
 use crate::output::RenderOptions;
 use crate::projection;
+use crate::row_id::{self, RowIds};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -20,13 +21,16 @@ pub async fn run(
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
     filter: Option<&str>,
+    row_ids: RowIds,
     lance: &LanceArgs,
     show_progress: bool,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let arrow_schema = ds.arrow_schema();
-    let projection = projection::resolve(&arrow_schema, columns, exclude)?;
+    let columns = prepare_row_id_columns(ds.as_ref(), columns, exclude, row_ids)?;
+    let projection = projection::resolve(&arrow_schema, columns.as_deref(), exclude)?;
     let projected_schema = project_arrow_schema(arrow_schema.as_ref(), projection.as_deref());
+    let projected_schema = row_id::extend_schema(&projected_schema, row_ids);
 
     // Do all fail-able work (counting, scanning, buffering) before emitting the
     // header, so error paths — including an invalid `--where` — leave stdout
@@ -41,11 +45,19 @@ pub async fn run(
         match filter {
             // Without a filter the row count is known up front, so we can jump
             // straight to the last `N` rows with a positional `take`.
-            None => tail_by_take(ds.as_ref(), limit, projection.as_deref()).await?,
+            None => tail_by_take(ds.as_ref(), limit, projection.as_deref(), row_ids).await?,
             // With a filter, positional indices no longer line up with the
             // matching rows, so stream the filtered rows and keep the tail.
             Some(pred) => {
-                tail_by_stream(ds.as_ref(), limit, projection.as_deref(), pred, &progress).await?
+                tail_by_stream(
+                    ds.as_ref(),
+                    limit,
+                    projection.as_deref(),
+                    pred,
+                    &progress,
+                    row_ids,
+                )
+                .await?
             }
         }
     };
@@ -66,6 +78,7 @@ async fn tail_by_take(
     ds: &dyn Dataset,
     limit: u64,
     projection: Option<&[String]>,
+    row_ids: RowIds,
 ) -> Result<Vec<RecordBatch>> {
     let rowcount = ds.count_rows(None).await?;
     let take_count = limit.min(rowcount);
@@ -74,7 +87,7 @@ async fn tail_by_take(
     }
     let start = rowcount - take_count;
     let indices: Vec<u64> = (start..rowcount).collect();
-    let batch = ds.take(&indices, projection).await?;
+    let batch = ds.take(&indices, projection, row_ids).await?;
     Ok(vec![batch])
 }
 
@@ -87,10 +100,12 @@ async fn tail_by_stream(
     projection: Option<&[String]>,
     filter: &str,
     progress: &ScanProgress,
+    row_ids: RowIds,
 ) -> Result<Vec<RecordBatch>> {
     let options = ScanOptions {
         projection,
         filter: Some(filter),
+        row_ids,
     };
     let mut stream = progress.wrap(ds.scan(&options).await?);
 
@@ -154,6 +169,7 @@ mod tests {
             None,
             "id % 2 = 0",
             &ScanProgress::disabled(),
+            RowIds::default(),
         )
         .await
         .unwrap();
@@ -166,9 +182,16 @@ mod tests {
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
-        let batches = tail_by_stream(ds.as_ref(), 100, None, "id >= 7", &ScanProgress::disabled())
-            .await
-            .unwrap();
+        let batches = tail_by_stream(
+            ds.as_ref(),
+            100,
+            None,
+            "id >= 7",
+            &ScanProgress::disabled(),
+            RowIds::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(collect_ids(&batches), vec![7, 8, 9]);
     }
 
@@ -178,9 +201,16 @@ mod tests {
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
-        let batches = tail_by_stream(ds.as_ref(), 3, None, "id > 100", &ScanProgress::disabled())
-            .await
-            .unwrap();
+        let batches = tail_by_stream(
+            ds.as_ref(),
+            3,
+            None,
+            "id > 100",
+            &ScanProgress::disabled(),
+            RowIds::default(),
+        )
+        .await
+        .unwrap();
         assert!(collect_ids(&batches).is_empty());
     }
 }

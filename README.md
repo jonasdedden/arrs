@@ -11,6 +11,7 @@ so other Arrow-backed formats can be added without touching commands or output.
   pretty **table**.
 - Filter rows by content with a SQL-style `--where` predicate.
 - Project columns with `--columns` / `--exclude-columns`.
+- Surface Lance row identity with `--with-row-id` / `--with-row-addr`.
 - Choose how binary payloads are rendered: hidden behind a placeholder, hex
   (`\xHH`), or base64.
 - Extract a single binary/blob cell's raw bytes to a file with `blob` —
@@ -307,6 +308,42 @@ arrs sample -n 100 --where "split = 'test'" dataset.lance
 is ambiguous and is rejected with a clear error — filter with `head`/`cat`
 instead. Invalid predicates surface the backend's parse error as
 `invalid --where predicate: …`.
+
+### Row identity with `--with-row-id` / `--with-row-addr`
+
+Lance gives every row two 64-bit identifiers that no schema column carries. The
+`cat`, `head`, `tail`, `take`, and `sample` commands can surface them:
+
+| Flag               | Column      | Meaning |
+| ------------------ | ----------- | ------- |
+| `--with-row-id`    | `_rowid`    | The row's identity. **Stable across deletions**; **stable across compaction only for datasets written with Lance's stable row ids enabled** (`enable_stable_row_ids`, off by default). With the default (address-based) row ids, `_rowid` equals `_rowaddr` and is *rewritten* by compaction, so treat it as stable-across-deletions only unless you know the dataset opted in. |
+| `--with-row-addr`  | `_rowaddr`  | The row's **physical address** in the *current* version: `(fragment_id << 32) | offset_in_fragment`. It pinpoints where the row lives on disk but is *not* stable across a rewrite/compaction. |
+
+Both are `UInt64`, and both may be combined. They are **appended** to the output
+after the projected columns, `_rowid` first, then `_rowaddr`:
+
+```sh
+arrs head --with-row-id dataset.lance
+# {"id":1,"score":0.5,…,"_rowid":0}
+
+arrs take --indices 0:4 --with-row-addr dataset.lance
+arrs head --columns id --with-row-id dataset.lance
+# {"id":1,"_rowid":0}   ← _rowid is emitted even though it isn't in --columns
+```
+
+Because they are not schema columns, the flags — not `--columns` — govern
+whether they appear: `_rowid` / `_rowaddr` are always emitted when the flag is
+set, regardless of `--columns` / `--exclude-columns`. Explicitly excluding a
+requested pseudo-column (`--with-row-id --exclude-columns _rowid`) is
+contradictory and errors with a hint to just drop the flag.
+
+Values are **consistent across commands** for the same version — `head`, `take`,
+and `sample` all report the same `_rowid` for a given row — and remain correct
+after deletions, so the surviving `_rowid`s of a deleted range are simply
+non-contiguous.
+
+These flags are Lance-only; a future non-Lance backend that cannot provide row
+identity rejects them with `not supported by this format`.
 
 ### Value counts with `freq`
 

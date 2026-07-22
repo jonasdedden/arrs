@@ -109,6 +109,36 @@ pub async fn write_simple(tmp: &TempDir, name: &str) -> PathBuf {
     path
 }
 
+/// Write `simple_batch()` (ids 1..=5 in one fragment) and then delete the rows
+/// with `id` 2 and 4, so the surviving rows (ids 1, 3, 5) have *non-contiguous*
+/// `_rowid`s. Fixture for the row-id stability-across-deletion tests.
+pub async fn write_simple_with_deletions(tmp: &TempDir, name: &str) -> PathBuf {
+    let path = write_simple(tmp, name).await;
+    let mut ds = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
+    ds.delete("id = 2 OR id = 4").await.unwrap();
+    path
+}
+
+/// Write `simple_batch()` (ids 1..=5) as version 1, then append ids 6, 7, 8 as
+/// version 2. The append lands in a new fragment, so the version-1 rows keep
+/// their addresses — fixture for asserting `_rowid` stability across `--version`.
+pub async fn write_simple_two_versions(tmp: &TempDir, name: &str) -> PathBuf {
+    let path = write_simple(tmp, name).await;
+    let mut ds = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let ids = Int32Array::from(vec![6, 7, 8]);
+    let names = StringArray::from(vec![Some("fred"), Some("gwen"), Some("hank")]);
+    let scores = Float64Array::from(vec![Some(6.0), Some(7.0), Some(8.0)]);
+    let batch = RecordBatch::try_new(
+        simple_schema(),
+        vec![Arc::new(ids), Arc::new(names), Arc::new(scores)],
+    )
+    .unwrap();
+    let schema = batch.schema();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+    ds.append(iter, None).await.unwrap();
+    path
+}
+
 /// Write the full (all types) dataset.
 pub async fn write_full(tmp: &TempDir, name: &str) -> PathBuf {
     let path = tmp.path().join(name);

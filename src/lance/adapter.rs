@@ -6,7 +6,7 @@ use arrow::buffer::NullBuffer;
 use arrow_array::{
     Array, ArrayRef, Float32Array, RecordBatch, RecordBatchReader, StructArray, make_array,
 };
-use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use futures::{StreamExt, TryStreamExt};
@@ -23,6 +23,7 @@ use crate::dataset::{
     VersionInfo,
 };
 use crate::error::Error;
+use crate::row_id::RowIds;
 
 /// Max in-flight object-store `size` lookups when computing fragment sizes.
 /// Fragments are typically backed by a single data file, so this bounds the
@@ -148,6 +149,35 @@ fn flatten_nested_projection(
     for entry in projection {
         fields.push(crate::projection::projected_field(schema, entry));
         columns.push(extract_column(batch, entry)?);
+    }
+    let out_schema = Arc::new(ArrowSchema::new(fields));
+    Ok(RecordBatch::try_new(out_schema, columns)?)
+}
+
+/// Reassemble a `take` result that includes system pseudo-columns into the
+/// canonical output order: the projected columns (flattened to dotted leaves,
+/// exactly like the scan path and `project_arrow_schema`), then the requested
+/// `_rowid` / `_rowaddr` columns. `base_cols` is the user projection (or all
+/// top-level names when unprojected); `system` names the pseudo-columns in
+/// output order. Both kinds of column are pulled by name from `batch`.
+fn assemble_take_output(
+    batch: &RecordBatch,
+    schema: &ArrowSchema,
+    base_cols: &[String],
+    system: &[&str],
+) -> Result<RecordBatch> {
+    let mut fields = Vec::with_capacity(base_cols.len() + system.len());
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(base_cols.len() + system.len());
+    for entry in base_cols {
+        fields.push(crate::projection::projected_field(schema, entry));
+        columns.push(extract_column(batch, entry)?);
+    }
+    for name in system {
+        let col = batch.column_by_name(name).ok_or_else(|| {
+            Error::Lance(format!("take did not return system column '{name}'").into())
+        })?;
+        fields.push(Field::new(*name, DataType::UInt64, true));
+        columns.push(col.clone());
     }
     let out_schema = Arc::new(ArrowSchema::new(fields));
     Ok(RecordBatch::try_new(out_schema, columns)?)
@@ -381,6 +411,15 @@ impl Dataset for LanceDataset {
                 .get_expr_filter()
                 .map_err(|e| Error::InvalidPredicate(predicate_error_message(&e)))?;
         }
+        // Append the system pseudo-columns last (after any projection). Lance
+        // emits `_rowid` before `_rowaddr`; `Scanner::with_row_id`/
+        // `with_row_address` add them to the already-set projection plan.
+        if options.row_ids.with_row_id {
+            scanner.with_row_id();
+        }
+        if options.row_ids.with_row_addr {
+            scanner.with_row_address();
+        }
         let stream = scanner
             .try_into_stream()
             .await
@@ -389,23 +428,68 @@ impl Dataset for LanceDataset {
         Ok(Box::pin(stream))
     }
 
-    async fn take(&self, indices: &[u64], projection: Option<&[String]>) -> Result<RecordBatch> {
-        let req = self.projection_request(projection);
+    async fn take(
+        &self,
+        indices: &[u64],
+        projection: Option<&[String]>,
+        row_ids: RowIds,
+    ) -> Result<RecordBatch> {
+        // No pseudo-columns: the original fast path, untouched.
+        if !row_ids.any() {
+            let req = self.projection_request(projection);
+            let batch = self
+                .inner
+                .take(indices, req)
+                .await
+                .map_err(|e| Error::Lance(Box::new(e)))?;
+            // `Dataset::take` returns nested projections as *pruned structs*,
+            // whereas the scan path (head/cat/…) returns them as *flat,
+            // dotted-named leaf columns*. Flatten here so every command surfaces
+            // the same shape (and matches the header built by
+            // `project_arrow_schema`).
+            return match projection {
+                Some(cols) if cols.iter().any(|c| is_nested_path(&self.arrow_schema, c)) => {
+                    flatten_nested_projection(&batch, &self.arrow_schema, cols)
+                }
+                _ => Ok(batch),
+            };
+        }
+
+        // With pseudo-columns: request the projected columns plus the system
+        // columns in one `take` (`ProjectionRequest::from_columns` preserves
+        // system columns), then reassemble into the canonical
+        // `[projected…, _rowid, _rowaddr]` order so the output matches the
+        // streaming scan and the writer header exactly — rather than trusting
+        // Lance's internal column placement.
+        let base_cols: Vec<String> = match projection {
+            Some(cols) => cols.to_vec(),
+            None => self
+                .arrow_schema
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect(),
+        };
+        let system = row_ids.columns();
+        let mut requested = base_cols.clone();
+        requested.extend(system.iter().map(|s| (*s).to_string()));
+        // `from_columns` calls `Schema::project_preserve_system_columns`, which
+        // Lance internally `.unwrap()`s — a bad column name would panic rather
+        // than error. That is safe here because every entry is either a real
+        // column already validated by the projection resolver, or a `_rowid` /
+        // `_rowaddr` name produced by `RowIds` (never user text), so the
+        // projection can never fail.
+        let req = ProjectionRequest::from_columns(requested.iter(), self.inner.schema());
         let batch = self
             .inner
             .take(indices, req)
             .await
             .map_err(|e| Error::Lance(Box::new(e)))?;
-        // `Dataset::take` returns nested projections as *pruned structs*, whereas
-        // the scan path (head/cat/…) returns them as *flat, dotted-named leaf
-        // columns*. Flatten here so every command surfaces the same shape (and
-        // matches the header built by `project_arrow_schema`).
-        match projection {
-            Some(cols) if cols.iter().any(|c| is_nested_path(&self.arrow_schema, c)) => {
-                flatten_nested_projection(&batch, &self.arrow_schema, cols)
-            }
-            _ => Ok(batch),
-        }
+        assemble_take_output(&batch, &self.arrow_schema, &base_cols, &system)
+    }
+
+    fn supports_row_id(&self) -> bool {
+        true
     }
 
     fn lance(&self) -> Option<&dyn LanceCapabilities> {
