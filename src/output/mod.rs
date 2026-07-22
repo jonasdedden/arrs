@@ -9,7 +9,6 @@
 
 pub mod csv;
 pub mod ipc;
-pub mod json;
 pub mod jsonl;
 pub mod table;
 pub mod value;
@@ -87,7 +86,6 @@ pub fn make_writer<'w, W: Write + 'w, R: Into<RenderOptions>>(
     match format {
         Format::Csv => Box::new(csv::CsvRowWriter::new(out, render)),
         Format::Jsonl => Box::new(jsonl::JsonlRowWriter::new(out, render)),
-        Format::Json => Box::new(json::JsonRowWriter::new(out, render)),
         Format::Table => Box::new(table::TableRowWriter::new(out, render, table_style)),
         // IPC is lossless and bypasses `value`, so it ignores both `render` and
         // `table_style`. The command layer rejects the value-rendering flags for
