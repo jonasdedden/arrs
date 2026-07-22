@@ -113,15 +113,7 @@ pub async fn dispatch(cli: Cli) -> Result<Outcome> {
         return lance::diff::run(&input, selectors, explicit_format).await;
     }
     let format = resolve_format(explicit_format, &cli.command);
-    run_command(
-        cli.command,
-        format,
-        render,
-        columns,
-        exclude,
-        show_progress,
-    )
-    .await?;
+    run_command(cli.command, format, render, columns, exclude, show_progress).await?;
     Ok(Outcome::Success)
 }
 
