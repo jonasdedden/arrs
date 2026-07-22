@@ -565,7 +565,7 @@ pub enum Command {
 // clap's own block is (immaterial when piped, which is how it is tested).
 //
 // Maintainability: the section membership lists below are the single source of
-// truth for both rendering and the exhaustiveness test in `tests/help.rs`, which
+// truth for both rendering and the exhaustiveness test in `tests/help_sections.rs`, which
 // fails if any subcommand is unassigned or assigned twice — the sections cannot
 // silently rot when a new command is added.
 
