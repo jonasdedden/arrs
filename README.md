@@ -124,9 +124,9 @@ denied) are surfaced with the offending URI and the underlying cause.
 
 | Flag                        | Default | Purpose                                                     |
 |-----------------------------|---------|-------------------------------------------------------------|
-| `--format <csv\|jsonl\|json\|table\|ipc>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`/`stat`, `jsonl` everywhere else. `json` emits a single streamed JSON array. `ipc` emits a lossless Arrow IPC stream and is only valid on `cat`/`head`/`tail`/`take`/`sample` (see below). |
+| `--format <csv\|jsonl\|table\|ipc>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`/`stat`, `jsonl` everywhere else. `ipc` emits a lossless Arrow IPC stream and is only valid on `cat`/`head`/`tail`/`take`/`sample` (see below). |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
-| `--max-list-items <N>`      | –       | Truncate lists / large-lists / fixed-size-lists to the first `N` elements, appending a `… (K more)` marker element (per nesting level). `jsonl`/`json` and nested table cells. Lossy. |
+| `--max-list-items <N>`      | –       | Truncate lists / large-lists / fixed-size-lists to the first `N` elements, appending a `… (K more)` marker element (per nesting level). `jsonl` and nested table cells. Lossy. |
 | `--max-cell-width <N>`      | –       | `table` only: truncate each rendered data cell to at most `N` characters, ending in `…` (header cells are exempt). Counts characters, never splits a UTF-8 codepoint. Lossy. |
 | `--float-precision <N>`     | –       | Render `f16`/`f32`/`f64` with exactly `N` fractional digits in every format (`NaN`/`Infinity` unaffected). Lossy. |
 | `--columns <a,b,…>`         | –       | Comma-separated include list. Supports glob patterns and nested paths (see below). User order is preserved. |
@@ -181,8 +181,8 @@ arrs head --format table --max-cell-width 40 dataset.lance
 # Round floats to 3 fractional digits (works in every format).
 arrs head --float-precision 3 dataset.lance
 
-# Emit one streamed JSON array (for tools that can't read JSONL) and pipe to jq.
-arrs cat --format json dataset.lance | jq '.[].id'
+# Emit newline-delimited JSON (one object per row) and pipe to jq.
+arrs cat --format jsonl dataset.lance | jq '.id'
 
 # Glob many partitions in one argument (quote it so the shell leaves it for
 # arrs to expand). Matches are concatenated in lexicographic order.
@@ -707,7 +707,7 @@ of it is derived without scanning data.
 `diff` emits its own report shape (human summary, or one JSON record with
 `--format jsonl`) rather than row-shaped output, so the output-control flags
 (`--max-list-items`, `--max-cell-width`, `--float-precision`) and the row
-formats (`csv`, `table`, `json`) do not apply to it.
+formats (`csv`, `table`, `ipc`) do not apply to it.
 
 ```sh
 arrs diff dataset.lance --from 3 --to 7
@@ -863,13 +863,6 @@ preserved and duplicates are emitted as-is.
 - Lists → JSON arrays; structs → JSON objects; maps → JSON objects with
   stringified keys.
 
-**JSON** (`--format json`)
-- A single well-formed JSON array of the same objects `jsonl` would emit:
-  `[{…},{…},…]`. Empty input yields `[]`.
-- Streamed with constant memory (one object materialized at a time), so it is
-  safe on large datasets — just not line-oriented like `jsonl`.
-- Parses directly with `jq .`.
-
 **CSV**
 - First line is a header row: `col1,col2,col3`. Column names
   containing `,`, newlines, or quotes are quoted per RFC 4180.
@@ -885,7 +878,7 @@ preserved and duplicates are emitted as-is.
 - `--max-list-items N`: after `N` elements, a list gets a trailing string
   element `… (K more)` where `K` is how many were dropped. Applied at every
   nesting level independently, and to `FixedSizeList` embedding columns. Because
-  the marker is a JSON string, `jsonl`/`json` arrays stay valid JSON.
+  the marker is a JSON string, `jsonl` arrays stay valid JSON.
 - `--max-cell-width N` (table only): each rendered data cell is cut to at most
   `N` characters, ending in `…` (the `…` counts toward `N`, so `N = 0` collapses
   a non-empty cell to a bare `…`). Header cells (column names) are never

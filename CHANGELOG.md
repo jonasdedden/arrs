@@ -79,7 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Output-control flags for the rendering layer (#11):
   - `--max-list-items N`: truncate list / large-list / fixed-size-list
     rendering to the first `N` elements, appending an explicit `… (K more)`
-    marker element. Applied per nesting level, in `jsonl`/`json` and nested
+    marker element. Applied per nesting level, in `jsonl` and nested
     table cells; the marker is a JSON string so arrays stay valid JSON. CSV
     still rejects nested columns.
   - `--max-cell-width N`: `table`-only per-cell truncation to at most `N`
@@ -87,9 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     splits a multi-byte UTF-8 codepoint), identical for TTY and piped output.
   - `--float-precision N`: render `f16`/`f32`/`f64` with exactly `N` fractional
     digits in every format (`NaN`/`Infinity` unaffected).
-  - `--format json`: a fourth output format emitting a single, well-formed JSON
-    array streamed with constant memory (`[`, comma-separated objects, `]`);
-    empty input yields `[]`.
 
   Truncation and precision are rendering-only and lossy (documented as such);
   defaults leave existing output byte-identical. `BinaryFormat` is now bundled

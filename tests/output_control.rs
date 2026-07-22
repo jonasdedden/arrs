@@ -1,13 +1,11 @@
 //! Tests for the #11 output-control flags: `--max-list-items`,
-//! `--max-cell-width`, `--float-precision`, and `--format json`.
+//! `--max-cell-width`, and `--float-precision`.
 //!
 //! These drive the writers directly through `make_writer` + `RenderOptions`
 //! over hand-built `RecordBatch`es, which is exactly the layer the flags touch.
 //! Defaults are asserted byte-identical for a truncatable case.
 
-use std::cell::RefCell;
-use std::io::{Cursor, Write};
-use std::rc::Rc;
+use std::io::Cursor;
 use std::sync::Arc;
 
 use arrow_array::builder::{ListBuilder, StringBuilder};
@@ -299,86 +297,21 @@ fn max_cell_width_never_splits_a_codepoint() {
     assert!(table.contains("日本語の…"), "got: {table}");
 }
 
-// ---------- --format json ----------
-
-#[test]
-fn json_format_is_single_parseable_array() {
-    let b = batch(3);
-    let out = render(Format::Json, opts(), &b);
-    let v: Value = serde_json::from_str(&out).unwrap();
-    let arr = v.as_array().unwrap();
-    assert_eq!(arr.len(), 3);
-    assert!(arr.iter().all(|o| o.is_object()));
-    assert_eq!(arr[0]["id"], serde_json::json!(0));
-}
-
-#[test]
-fn json_format_empty_input_is_empty_array() {
-    let b = batch(0);
-    let out = render(Format::Json, opts(), &b);
-    let v: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(v, Value::Array(vec![]));
-}
-
-#[test]
-fn json_format_streams_each_object_before_finish() {
-    // Constant-memory by construction: the first object is flushed to the sink
-    // during write_batch, long before finish() writes the closing bracket.
-    #[derive(Clone)]
-    struct SharedBuf(Rc<RefCell<Vec<u8>>>);
-    impl Write for SharedBuf {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.borrow_mut().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let sink = Rc::new(RefCell::new(Vec::new()));
-    let b = batch(2);
-    let schema = b.schema();
-    let mut w = make_writer(
-        Format::Json,
-        opts(),
-        TableStyle::Plain,
-        SharedBuf(sink.clone()),
-    );
-    w.start(&schema).unwrap();
-    w.write_batch(&b).unwrap();
-    // Mid-stream: both row objects are already written (flushed per row), but
-    // the top-level array is still open — it ends on the last object's `}`, not
-    // the closing `]` which only finish() appends.
-    let mid = String::from_utf8(sink.borrow().clone()).unwrap();
-    assert!(mid.starts_with('['));
-    assert!(mid.contains("\"id\":0") && mid.contains("\"id\":1"));
-    assert!(
-        mid.trim_end().ends_with('}'),
-        "array must still be open before finish: {mid}"
-    );
-    w.finish().unwrap();
-    let full = String::from_utf8(sink.borrow().clone()).unwrap();
-    assert!(full.trim_end().ends_with(']'));
-    let v: Value = serde_json::from_str(&full).unwrap();
-    assert_eq!(v.as_array().unwrap().len(), 2);
-}
-
 // ---------- combined flags ----------
 
 #[test]
-fn combined_json_truncation_and_precision() {
+fn combined_jsonl_truncation_and_precision() {
     let b = batch(2);
     let o = RenderOptions {
         max_list_items: Some(3),
         float_precision: Some(2),
         ..opts()
     };
-    let out = render(Format::Json, o, &b);
-    let v: Value = serde_json::from_str(&out).unwrap();
-    let arr = v.as_array().unwrap();
-    assert_eq!(arr.len(), 2);
-    for obj in arr {
+    let jsonl = render(Format::Jsonl, o, &b);
+    let lines: Vec<&str> = jsonl.lines().collect();
+    assert_eq!(lines.len(), 2);
+    for line in lines {
+        let obj: Value = serde_json::from_str(line).unwrap();
         let emb = obj["emb"].as_array().unwrap();
         assert_eq!(emb.len(), 4); // 3 + marker
         assert_eq!(emb[3], Value::String("… (3 more)".to_string()));

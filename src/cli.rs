@@ -11,9 +11,6 @@ pub enum Format {
     /// Buffers all rows before printing, so prefer `jsonl`/`csv` for very large
     /// inputs piped through `cat`/`head`/etc.
     Table,
-    /// A single well-formed JSON array (`[obj, obj, …]`), streamed with constant
-    /// memory. For consumers that can't read JSONL. Empty input yields `[]`.
-    Json,
     /// Arrow IPC streaming format written to stdout, for lossless composition
     /// with the Arrow ecosystem (DuckDB, Polars, pyarrow, ADBC). Batches go
     /// straight from the scan to `arrow::ipc::writer::StreamWriter`, so output is
