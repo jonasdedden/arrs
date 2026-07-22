@@ -11,7 +11,7 @@ mod tail;
 mod take;
 
 use crate::Result;
-use crate::cli::{BinaryFormat, Cli, Command, Format};
+use crate::cli::{Cli, Command, Format};
 use crate::error::Error;
 use crate::output::RenderOptions;
 
@@ -63,14 +63,14 @@ pub async fn dispatch(cli: Cli) -> Result<Outcome> {
         return lance::diff::run(&input, selectors, explicit_format).await;
     }
     let format = resolve_format(explicit_format, &cli.command);
-    run_command(cli.command, format, binary_format, columns, exclude).await?;
+    run_command(cli.command, format, render, columns, exclude).await?;
     Ok(Outcome::Success)
 }
 
 async fn run_command(
     command: Command,
     format: Format,
-    binary_format: BinaryFormat,
+    render: RenderOptions,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
 ) -> Result<()> {
@@ -184,7 +184,7 @@ async fn run_command(
                 limit,
                 sort,
                 format,
-                binary_format,
+                render,
                 filter.predicate.as_deref(),
                 &lance,
             )
@@ -260,12 +260,12 @@ async fn run_command(
         Command::IndexStats {
             input,
             lance: lance_args,
-        } => lance::index_stats::run(&input, &lance_args, format, binary_format).await,
+        } => lance::index_stats::run(&input, &lance_args, format, render).await,
         Command::Stat {
             input,
             no_size,
             lance: lance_args,
-        } => lance::stat::run(&input, &lance_args, no_size, format, binary_format).await,
+        } => lance::stat::run(&input, &lance_args, no_size, format, render).await,
         // `diff` is intercepted in `dispatch` (distinct format + exit-code
         // handling) and never reaches this shared row-format path.
         Command::Diff { .. } => unreachable!("diff is dispatched separately"),

@@ -561,6 +561,11 @@ between them — answering "what happened between version 3 and version 7?".
 Because Lance's manifests carry fragment, schema and index metadata, almost all
 of it is derived without scanning data.
 
+`diff` emits its own report shape (human summary, or one JSON record with
+`--format jsonl`) rather than row-shaped output, so the output-control flags
+(`--max-list-items`, `--max-cell-width`, `--float-precision`) and the row
+formats (`csv`, `table`, `json`) do not apply to it.
+
 ```sh
 arrs diff --from 3 --to 7 dataset.lance
 arrs diff --from-tag release-1 --to-tag release-2 dataset.lance
