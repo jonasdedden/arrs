@@ -34,6 +34,16 @@ pub enum Outcome {
 }
 
 pub async fn dispatch(cli: Cli) -> Result<Outcome> {
+    // Reject `--format` on commands that don't emit row-shaped output — including
+    // `completions` — before anything else runs. This must precede the
+    // `completions` interception below, otherwise `arrs completions bash
+    // --format csv` would silently ignore `--format` instead of erroring.
+    if let Some(name) = command_ignoring_format(&cli.command)
+        && cli.format.is_some()
+    {
+        return Err(Error::FormatNotApplicable { command: name });
+    }
+
     // `completions` takes no dataset input and bypasses the format/output
     // machinery: intercept it before any of that runs and exit 0.
     if let Command::Completions { shell } = cli.command {
@@ -53,11 +63,6 @@ pub async fn dispatch(cli: Cli) -> Result<Outcome> {
     // `--no-progress` is set or when stderr is redirected/piped. Folding both
     // into one flag here keeps every command's own logic to "bar vs spinner".
     let show_progress = !cli.no_progress && std::io::stderr().is_terminal();
-    if let Some(name) = command_ignoring_format(&cli.command)
-        && cli.format.is_some()
-    {
-        return Err(Error::FormatNotApplicable { command: name });
-    }
     let explicit_format = cli.format;
     // `diff` owns its own format semantics (human summary vs `--format jsonl`)
     // and its own exit-code outcome, so it is branched out before the
@@ -378,6 +383,8 @@ fn command_ignoring_format(cmd: &Command) -> Option<&'static str> {
         Command::Rowcount { .. } => Some("rowcount"),
         Command::Schema { .. } => Some("schema"),
         Command::Blob { .. } => Some("blob"),
+        // `completions` prints a shell script, not row-shaped output.
+        Command::Completions { .. } => Some("completions"),
         _ => None,
     }
 }

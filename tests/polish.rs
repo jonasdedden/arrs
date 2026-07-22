@@ -57,7 +57,7 @@ async fn write_ids(dir: &Path, name: &str, ids: &[i32]) -> PathBuf {
 
 #[test]
 fn completions_generate_for_every_shell() {
-    for shell in ["bash", "zsh", "fish", "powershell"] {
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
         let out = run(&["completions", shell]);
         assert!(out.status.success(), "completions {shell} exited non-zero");
         let script = stdout_of(&out);
@@ -80,6 +80,28 @@ fn completions_generate_for_every_shell() {
 fn completions_rejects_unknown_shell() {
     let out = run(&["completions", "notashell"]);
     assert!(!out.status.success(), "unknown shell should be rejected");
+}
+
+#[test]
+fn completions_rejects_format_flag() {
+    // `--format` does not apply to `completions` (it prints a shell script, not
+    // row-shaped output), so it must hard-error per the repo convention rather
+    // than being silently ignored.
+    let out = run(&["completions", "bash", "--format", "csv"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "--format on completions should exit 2"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "no completion script should be printed"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not applicable to 'completions'"),
+        "stderr missing FormatNotApplicable message, got: {stderr}"
+    );
 }
 
 // -------------------- progress / stdout hygiene --------------------

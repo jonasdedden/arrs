@@ -52,8 +52,10 @@ arrs completions zsh > ~/.zfunc/_arrs   # ensure `fpath+=(~/.zfunc)` precedes `c
 # fish:
 arrs completions fish > ~/.config/fish/completions/arrs.fish
 
-# PowerShell — append to your profile so it loads on each session:
-arrs completions powershell | Out-String | Add-Content $PROFILE
+# PowerShell — write the script to a file, then dot-source that file from your
+# profile (regenerating overwrites the file, so it never duplicates):
+arrs completions powershell > $HOME\arrs.completion.ps1
+Add-Content $PROFILE '. $HOME\arrs.completion.ps1'   # run once
 ```
 
 ## Commands

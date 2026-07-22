@@ -67,6 +67,13 @@ pub async fn compute(
     let options = ScanOptions { projection, filter };
 
     // Give the backend a chance to answer from metadata instead of scanning.
+    //
+    // Progress trap: no backend overrides `Dataset::stats` today, so this branch
+    // is never taken and the caller's `ScanProgress` (built before this call)
+    // always drives the scan below. If a backend ever implements this hook, this
+    // early return would leave that bar created-but-never-advanced. Whoever adds
+    // a metadata `stats` implementation must construct/skip the progress bar
+    // around this decision instead — the caller cannot know the answer up front.
     if let Some(result) = ds.stats(&options).await {
         return result;
     }

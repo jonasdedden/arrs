@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Library API: `arrs::stats::compute` gained a `&ScanProgress` parameter (used
+  to drive the scan progress indicator). This is a breaking signature change for
+  direct library consumers — acceptable under 0.x, but noted here. CLI users are
+  unaffected. (#14)
+
 ### Added
 
 - `completions <shell>` command: prints a shell completion script (bash, zsh,
