@@ -157,6 +157,21 @@ pub enum Error {
     FormatNotApplicable { command: &'static str },
 
     #[error(
+        "--format ipc is only supported on the row-producing commands (cat/head/tail/take/sample), not '{command}'"
+    )]
+    IpcNotApplicable { command: &'static str },
+
+    #[error(
+        "{flag} is a value-rendering flag and does not apply to --format ipc, which is lossless; drop {flag} or choose a text format"
+    )]
+    IpcRenderingFlag { flag: &'static str },
+
+    #[error(
+        "refusing to write binary Arrow IPC to a terminal; redirect it to a file (arrs ... --format ipc > out.arrows) or pipe it to another program"
+    )]
+    IpcToTerminal,
+
+    #[error(
         "diff compares two versions of one branch, but the endpoints resolved to different branches ('{from_branch}' and '{to_branch}'); scope both with --branch or use tags on the same branch"
     )]
     DiffCrossBranch {

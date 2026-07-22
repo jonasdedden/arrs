@@ -144,6 +144,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (surviving `_rowid`s become non-contiguous). A `Dataset::supports_row_id`
   capability hook rejects the flags on formats that can't provide them with a
   clear "not supported by this format" error. (#21)
+- `--format ipc` Arrow IPC streaming output for the row-producing commands
+  (`cat`, `head`, `tail`, `take`, `sample`), writing the lossless Arrow IPC
+  stream to stdout via `arrow::ipc::writer::StreamWriter` at constant memory.
+  Bypasses value rendering entirely, making arrs composable with DuckDB
+  (`read_arrow`), pyarrow, Polars, and ADBC tools with zero fidelity loss.
+  Refuses to write to a terminal, rejects the inapplicable value-rendering flags
+  (`--binary-format`/`--max-list-items`/`--max-cell-width`/`--float-precision`),
+  and is rejected on metadata/summary commands (a possible follow-up). (#12)
 
 ### Changed
 

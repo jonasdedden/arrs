@@ -18,7 +18,7 @@ mod take;
 use std::io::IsTerminal;
 
 use crate::Result;
-use crate::cli::{Cli, Command, Format};
+use crate::cli::{BinaryFormat, Cli, Command, Format};
 use crate::error::Error;
 use crate::output::RenderOptions;
 
@@ -113,6 +113,14 @@ pub async fn dispatch(cli: Cli) -> Result<Outcome> {
         return lance::diff::run(&input, selectors, explicit_format).await;
     }
     let format = resolve_format(explicit_format, &cli.command);
+    // IPC is a binary, lossless stream: it is only valid on the row-producing
+    // commands, the value-rendering flags do not apply to it, and it must never
+    // be dumped into a terminal. Validate all three before any command runs so
+    // nothing is written to stdout on the rejection paths. `format` is only ever
+    // `Ipc` when it was passed explicitly (it is never a per-command default).
+    if format == Format::Ipc {
+        validate_ipc(&cli.command, &render)?;
+    }
     run_command(cli.command, format, render, columns, exclude, show_progress).await?;
     Ok(Outcome::Success)
 }
@@ -388,5 +396,72 @@ fn command_ignoring_format(cmd: &Command) -> Option<&'static str> {
         // `completions` prints a shell script, not row-shaped output.
         Command::Completions { .. } => Some("completions"),
         _ => None,
+    }
+}
+
+/// Gate `--format ipc` before any output is emitted:
+///
+/// - reject IPC on commands that aren't one of the row-producing five
+///   (metadata/summary commands may add it as a follow-up, per the issue);
+/// - reject the value-rendering flags, which are meaningless for a lossless
+///   binary stream (we reject rather than silently ignore, matching the repo's
+///   hard-error stance on inapplicable rendering knobs — documented in README);
+/// - refuse to write the binary stream to a terminal.
+fn validate_ipc(cmd: &Command, render: &RenderOptions) -> Result<()> {
+    if let Some(command) = command_rejecting_ipc(cmd) {
+        return Err(Error::IpcNotApplicable { command });
+    }
+    if render.binary_format != BinaryFormat::None {
+        return Err(Error::IpcRenderingFlag {
+            flag: "--binary-format",
+        });
+    }
+    if render.max_list_items.is_some() {
+        return Err(Error::IpcRenderingFlag {
+            flag: "--max-list-items",
+        });
+    }
+    if render.max_cell_width.is_some() {
+        return Err(Error::IpcRenderingFlag {
+            flag: "--max-cell-width",
+        });
+    }
+    if render.float_precision.is_some() {
+        return Err(Error::IpcRenderingFlag {
+            flag: "--float-precision",
+        });
+    }
+    crate::output::ipc::guard_not_terminal(std::io::stdout().is_terminal())
+}
+
+/// For `--format ipc`: `None` for the row-producing commands that can emit an
+/// Arrow IPC stream (cat/head/tail/take/sample), `Some(name)` for every command
+/// that rejects it. Commands that ignore `--format` entirely (rowcount/schema)
+/// are caught earlier by `command_ignoring_format`, and `diff` is dispatched
+/// separately and rejects IPC itself, so those arms are defensive only.
+fn command_rejecting_ipc(cmd: &Command) -> Option<&'static str> {
+    match cmd {
+        Command::Cat { .. }
+        | Command::Head { .. }
+        | Command::Tail { .. }
+        | Command::Take { .. }
+        | Command::Sample { .. } => None,
+        Command::Stats { .. } => Some("stats"),
+        Command::Freq { .. } => Some("freq"),
+        Command::Stat { .. } => Some("stat"),
+        Command::Versions { .. } => Some("versions"),
+        Command::Branches { .. } => Some("branches"),
+        Command::Tags { .. } => Some("tags"),
+        Command::Indices { .. } => Some("indices"),
+        Command::IndexStats { .. } => Some("index-stats"),
+        Command::Fragments { .. } => Some("fragments"),
+        Command::Search { .. } => Some("search"),
+        Command::Rowcount { .. } => Some("rowcount"),
+        Command::Schema { .. } => Some("schema"),
+        Command::Diff { .. } => Some("diff"),
+        Command::Blob { .. } => Some("blob"),
+        // Defensive: `completions` already hard-errors on any `--format` via
+        // `command_ignoring_format`; the arm only satisfies exhaustiveness.
+        Command::Completions { .. } => Some("completions"),
     }
 }

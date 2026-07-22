@@ -124,7 +124,7 @@ denied) are surfaced with the offending URI and the underlying cause.
 
 | Flag                        | Default | Purpose                                                     |
 |-----------------------------|---------|-------------------------------------------------------------|
-| `--format <csv\|jsonl\|json\|table>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`/`stat`, `jsonl` everywhere else. `json` emits a single streamed JSON array. |
+| `--format <csv\|jsonl\|json\|table\|ipc>` | per-cmd | Output format. Defaults to `table` for `versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/`stats`/`freq`/`stat`, `jsonl` everywhere else. `json` emits a single streamed JSON array. `ipc` emits a lossless Arrow IPC stream and is only valid on `cat`/`head`/`tail`/`take`/`sample` (see below). |
 | `--binary-format <...>`     | `none`  | `none` → `BINARY_DATA` placeholder; `hex` → `\xHH`; `base64`.|
 | `--max-list-items <N>`      | –       | Truncate lists / large-lists / fixed-size-lists to the first `N` elements, appending a `… (K more)` marker element (per nesting level). `jsonl`/`json` and nested table cells. Lossy. |
 | `--max-cell-width <N>`      | –       | `table` only: truncate each rendered data cell to at most `N` characters, ending in `…` (header cells are exempt). Counts characters, never splits a UTF-8 codepoint. Lossy. |
@@ -140,6 +140,12 @@ lossy and is not meant for round-tripping — in particular it is not a
 CSV-parse-ability guarantee, and nested types remain rejected by CSV regardless.
 List truncation appends a literal string element `… (K more)` (e.g.
 `… (1532 more)`), which keeps `jsonl`/`json` arrays valid JSON.
+
+Because `--format ipc` is lossless by construction, these rendering flags —
+along with `--binary-format` — have nothing to act on. Rather than silently
+ignore them, arrs **rejects** the combination with a clear error, matching how
+it treats other inapplicable rendering knobs. See the **Arrow IPC output**
+section under [Output format notes](#output-format-notes) below.
 
 ## Examples
 
@@ -181,6 +187,13 @@ arrs cat --format json dataset.lance | jq '.[].id'
 # Glob many partitions in one argument (quote it so the shell leaves it for
 # arrs to expand). Matches are concatenated in lexicographic order.
 arrs cat 'data/part_*.lance'
+
+# Lossless Arrow IPC stream — compose with the whole Arrow ecosystem.
+arrs sample -n 1000 --seed 42 dataset.lance --format ipc > sample.arrows
+arrs cat --where "score > 0.9" dataset.lance --format ipc \
+  | duckdb -c "SELECT count(*) FROM read_arrow('/dev/stdin')"
+arrs head -n 100 dataset.lance --format ipc \
+  | python -c "import pyarrow.ipc, sys; print(pyarrow.ipc.open_stream(sys.stdin.buffer).read_all())"
 
 # Inspect schemas.
 arrs schema dataset.lance                 # arrow (logical)
@@ -892,3 +905,38 @@ preserved and duplicates are emitted as-is.
 - **Buffers all rows** before emitting (column widths require the full table).
   Default for `freq` and the four metadata commands (small row counts), opt-in
   for row-producing commands; prefer `jsonl`/`csv` when streaming large datasets.
+
+### Arrow IPC output (`--format ipc`)
+
+`--format ipc` writes the [Arrow IPC **streaming**
+format](https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format)
+straight to stdout: the schema once, then each `RecordBatch` from the scan, then
+an end-of-stream marker. It bypasses all value rendering, so it is **lossless**
+(exact types, nulls, nested/binary/timestamp values) and **fully streaming at
+constant memory** regardless of dataset size. This makes arrs a first-class Unix
+citizen for the Arrow ecosystem — pipe it into DuckDB (`read_arrow`), pyarrow
+(`pyarrow.ipc.open_stream`), Polars, or any ADBC tool with zero fidelity loss.
+
+- **Only** on the row-producing commands: `cat`, `head`, `tail`, `take`,
+  `sample`. Metadata/summary commands (`stats`, `freq`, `versions`, `branches`,
+  `tags`, `indices`, `index-stats`, `fragments`, `stat`, `search`, `diff`) reject
+  it with a clear error; they materialize their own computed shapes and may gain
+  IPC as a follow-up.
+- **Refuses a terminal.** Dumping a binary stream into your terminal is never
+  useful, so arrs errors and asks you to redirect (`… --format ipc > out.arrows`)
+  or pipe it, mirroring how `git diff` guards binary output.
+- **Value-rendering flags are rejected, not ignored.** `--binary-format`,
+  `--max-list-items`, `--max-cell-width`, and `--float-precision` are all
+  cosmetic/lossy knobs with nothing to act on in a lossless stream, so combining
+  any of them with `--format ipc` is an error rather than a silent no-op.
+- Projection (`--columns`/`--exclude-columns`) and `--where` apply as usual, so
+  projected/filtered IPC output is free. For `cat` with multiple inputs the
+  schema is taken from the first dataset (all inputs must already share a schema).
+- An empty result still produces a valid, readable IPC stream (schema +
+  end-of-stream, zero batches).
+
+```sh
+arrs cat --where "score > 0.9" ds.lance --format ipc \
+  | duckdb -c "SELECT * FROM read_arrow('/dev/stdin')"
+arrs sample -n 1000 ds.lance --format ipc > sample.arrows
+```
