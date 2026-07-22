@@ -1042,6 +1042,7 @@ fn format_on_schema_errors() {
             max_list_items: None,
             max_cell_width: None,
             float_precision: None,
+            no_progress: false,
             command: Command::Schema {
                 input: "does-not-matter".to_string(),
                 ty: arrs::cli::SchemaType::Arrow,
@@ -1067,6 +1068,7 @@ fn format_on_rowcount_errors() {
             max_list_items: None,
             max_cell_width: None,
             float_precision: None,
+            no_progress: false,
             command: Command::Rowcount {
                 input: "does-not-matter".to_string(),
                 filter: FilterArg::default(),
@@ -1094,6 +1096,7 @@ fn empty_cat_via_dispatch_errors() {
             max_list_items: None,
             max_cell_width: None,
             float_precision: None,
+            no_progress: false,
             command: Command::Cat {
                 inputs: vec![],
                 filter: FilterArg::default(),
@@ -1238,6 +1241,7 @@ fn take_with_where_is_rejected() {
             max_list_items: None,
             max_cell_width: None,
             float_precision: None,
+            no_progress: false,
             command: Command::Take {
                 input: "does-not-matter".to_string(),
                 indices: "0".to_string(),

@@ -6,6 +6,7 @@ use futures::StreamExt;
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema};
+use crate::commands::progress::ScanProgress;
 use crate::dataset::{self, Dataset, ScanOptions};
 use crate::output::RenderOptions;
 use crate::projection;
@@ -20,6 +21,7 @@ pub async fn run(
     exclude: Option<&[String]>,
     filter: Option<&str>,
     lance: &LanceArgs,
+    show_progress: bool,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let arrow_schema = ds.arrow_schema();
@@ -29,6 +31,10 @@ pub async fn run(
     // Do all fail-able work (counting, scanning, buffering) before emitting the
     // header, so error paths — including an invalid `--where` — leave stdout
     // untouched.
+    // Progress: the unfiltered fast path is a metadata `count_rows` + a single
+    // `take` (no scan), so only the filtered streaming path gets an indicator.
+    // The surviving-row total is unknown up front, so use a rows-scanned spinner.
+    let progress = ScanProgress::new(show_progress && filter.is_some(), None);
     let batches = if limit == 0 {
         Vec::new()
     } else {
@@ -38,9 +44,12 @@ pub async fn run(
             None => tail_by_take(ds.as_ref(), limit, projection.as_deref()).await?,
             // With a filter, positional indices no longer line up with the
             // matching rows, so stream the filtered rows and keep the tail.
-            Some(pred) => tail_by_stream(ds.as_ref(), limit, projection.as_deref(), pred).await?,
+            Some(pred) => {
+                tail_by_stream(ds.as_ref(), limit, projection.as_deref(), pred, &progress).await?
+            }
         }
     };
+    progress.finish();
 
     let mut writer = make_stdout_writer(format, render);
     writer.start(&projected_schema)?;
@@ -77,12 +86,13 @@ async fn tail_by_stream(
     limit: u64,
     projection: Option<&[String]>,
     filter: &str,
+    progress: &ScanProgress,
 ) -> Result<Vec<RecordBatch>> {
     let options = ScanOptions {
         projection,
         filter: Some(filter),
     };
-    let mut stream = ds.scan(&options).await?;
+    let mut stream = progress.wrap(ds.scan(&options).await?);
 
     let mut buffered: VecDeque<RecordBatch> = VecDeque::new();
     let mut buffered_rows: u64 = 0;
@@ -138,9 +148,15 @@ mod tests {
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         // Even ids are [0, 2, 4, 6, 8]; the last three are [4, 6, 8].
-        let batches = tail_by_stream(ds.as_ref(), 3, None, "id % 2 = 0")
-            .await
-            .unwrap();
+        let batches = tail_by_stream(
+            ds.as_ref(),
+            3,
+            None,
+            "id % 2 = 0",
+            &ScanProgress::disabled(),
+        )
+        .await
+        .unwrap();
         assert_eq!(collect_ids(&batches), vec![4, 6, 8]);
     }
 
@@ -150,7 +166,7 @@ mod tests {
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
-        let batches = tail_by_stream(ds.as_ref(), 100, None, "id >= 7")
+        let batches = tail_by_stream(ds.as_ref(), 100, None, "id >= 7", &ScanProgress::disabled())
             .await
             .unwrap();
         assert_eq!(collect_ids(&batches), vec![7, 8, 9]);
@@ -162,7 +178,7 @@ mod tests {
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
-        let batches = tail_by_stream(ds.as_ref(), 3, None, "id > 100")
+        let batches = tail_by_stream(ds.as_ref(), 3, None, "id > 100", &ScanProgress::disabled())
             .await
             .unwrap();
         assert!(collect_ids(&batches).is_empty());

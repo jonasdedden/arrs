@@ -18,6 +18,12 @@ pub enum Error {
     #[error("pattern '{pattern}' matches no columns (available: {available})")]
     NoGlobMatch { pattern: String, available: String },
 
+    #[error("input pattern '{pattern}' matched no files or datasets")]
+    InputGlobNoMatch { pattern: String },
+
+    #[error("invalid input glob pattern '{pattern}': {message}")]
+    InvalidGlobPattern { pattern: String, message: String },
+
     #[error("unknown field '{field}' in '{parent}' for path '{path}' (available: {available})")]
     UnknownNestedField {
         path: String,

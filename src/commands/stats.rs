@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
 use crate::commands::common::make_stdout_writer;
+use crate::commands::progress::ScanProgress;
 use crate::dataset;
 use crate::output::RenderOptions;
 use crate::projection;
@@ -21,12 +22,25 @@ pub async fn run(
     exclude: Option<&[String]>,
     filter: Option<&str>,
     lance: &LanceArgs,
+    show_progress: bool,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let schema = ds.arrow_schema();
     let projection = projection::resolve(&schema, columns, exclude)?;
 
-    let column_stats = stats::compute(ds.as_ref(), projection.as_deref(), filter).await?;
+    // Progress: `stats` always scans the whole (optionally filtered) dataset.
+    // With no filter the row total is a cheap metadata `count_rows`, so show a
+    // bar with an ETA; with a filter the surviving-row total is unknown, so use
+    // a rows-scanned spinner.
+    let total = if show_progress && filter.is_none() {
+        Some(ds.count_rows(None).await?)
+    } else {
+        None
+    };
+    let progress = ScanProgress::new(show_progress, total);
+    let column_stats =
+        stats::compute(ds.as_ref(), &progress, projection.as_deref(), filter).await?;
+    progress.finish();
     let batch = stats::to_record_batch(&column_stats)?;
 
     let mut writer = make_stdout_writer(format, render);

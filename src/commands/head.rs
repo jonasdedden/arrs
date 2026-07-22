@@ -3,6 +3,7 @@ use futures::StreamExt;
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema};
+use crate::commands::progress::ScanProgress;
 use crate::dataset::{self, ScanOptions};
 use crate::output::RenderOptions;
 use crate::projection;
@@ -17,11 +18,18 @@ pub async fn run(
     exclude: Option<&[String]>,
     filter: Option<&str>,
     lance: &LanceArgs,
+    show_progress: bool,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let arrow_schema = ds.arrow_schema();
     let projection = projection::resolve(&arrow_schema, columns, exclude)?;
     let projected_schema = project_arrow_schema(arrow_schema.as_ref(), projection.as_deref());
+
+    // Progress: an unfiltered `head` stops after `limit` rows, so it barely
+    // scans and needs no indicator. A filtered `head` may scan far to find
+    // sparse matches, so show a rows-scanned spinner (the surviving-row total is
+    // unknown up front).
+    let progress = ScanProgress::new(show_progress && filter.is_some(), None);
 
     // Open the scan before emitting the header: the adapter validates the
     // predicate eagerly, so an invalid `--where` must not leave a stray header
@@ -31,7 +39,7 @@ pub async fn run(
             projection: projection.as_deref(),
             filter,
         };
-        Some(ds.scan(&options).await?)
+        Some(progress.wrap(ds.scan(&options).await?))
     } else {
         None
     };
@@ -58,5 +66,6 @@ pub async fn run(
         }
     }
     writer.finish()?;
+    progress.finish();
     Ok(())
 }

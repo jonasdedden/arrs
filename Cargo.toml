@@ -28,9 +28,20 @@ async-trait = "0.1.89"
 base64 = "0.22.1"
 chrono = "0.4.44"
 clap = { version = "4.6.1", features = ["derive"] }
+# `completions` subcommand generators; tracks clap's own minor version.
+clap_complete = "4.6.7"
 comfy-table = "7.2.2"
 csv = "1.4.0"
 futures = "0.3.32"
+# `cat` input glob expansion. Already in the tree transitively via lance, so
+# depending on it directly adds no binary size.
+glob = "0.3.4"
+# Scan progress indicator on stderr. `default-features = false` drops the two
+# default features — `unicode-width` (wide-char width tables) and `wasmbind`
+# (a wasm-only timer shim) — neither of which a plain ASCII bar/spinner on a
+# native target needs. The heavier extras (rayon, tokio, in_memory, …) are
+# opt-in and were never enabled.
+indicatif = { version = "0.18.6", default-features = false }
 # `aws`/`gcp`/`azure` enable object_store backends for s3://, gs:// and az://
 # URIs. They are part of lance's default feature set, so listing them here is a
 # deliberate no-op that pins remote support even if defaults ever change; it

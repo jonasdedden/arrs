@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 pub enum Format {
@@ -136,6 +137,12 @@ pub struct Cli {
     /// Comma-separated list of columns to exclude. Takes precedence over --columns.
     #[arg(long = "exclude-columns", global = true, value_delimiter = ',')]
     pub exclude_columns: Option<Vec<String>>,
+
+    /// Disable the scan progress indicator on stderr. Progress is drawn only for
+    /// long scans and only when stderr is a TTY, so it is already absent when
+    /// output is piped; this flag suppresses it unconditionally.
+    #[arg(long = "no-progress", global = true)]
+    pub no_progress: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -421,5 +428,16 @@ pub enum Command {
         input: String,
         #[command(flatten)]
         lance: LanceArgs,
+    },
+
+    /// (Setup) Generate a shell completion script and print it to stdout.
+    ///
+    /// Takes no dataset input; writes the script for the given shell and exits.
+    /// See the README install section for where to install each shell's script,
+    /// e.g. `arrs completions fish > ~/.config/fish/completions/arrs.fish`.
+    Completions {
+        /// Shell to generate completions for (bash, zsh, fish, powershell, elvish).
+        #[arg(value_enum)]
+        shell: Shell,
     },
 }

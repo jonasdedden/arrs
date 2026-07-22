@@ -7,6 +7,7 @@ use rand_chacha::ChaCha20Rng;
 use crate::Result;
 use crate::cli::{Format, LanceArgs};
 use crate::commands::common::{make_stdout_writer, project_arrow_schema};
+use crate::commands::progress::ScanProgress;
 use crate::dataset::{self, Dataset, ScanOptions};
 use crate::error::Error;
 use crate::output::RenderOptions;
@@ -23,6 +24,7 @@ pub async fn run(
     exclude: Option<&[String]>,
     filter: Option<&str>,
     lance: &LanceArgs,
+    show_progress: bool,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
     let arrow_schema = ds.arrow_schema();
@@ -32,6 +34,10 @@ pub async fn run(
     // Sample fully before emitting the header (both paths materialise their
     // result), so error paths — an oversize sample or an invalid `--where` —
     // leave stdout untouched.
+    // Progress: the unfiltered fast path is a metadata `count_rows` + a single
+    // `take` (no scan), so only the filtered reservoir path gets an indicator.
+    // The matching-row total is unknown up front, so use a rows-scanned spinner.
+    let progress = ScanProgress::new(show_progress && filter.is_some(), None);
     let output = match filter {
         // Without a filter the row count is known, so shuffle positional
         // indices and `take` the chosen rows in one shot.
@@ -40,9 +46,18 @@ pub async fn run(
         // positional indices no longer address the matching rows — reservoir
         // sample over the filtered stream instead.
         Some(pred) => {
-            sample_by_reservoir(ds.as_ref(), limit, seed, projection.as_deref(), pred).await?
+            sample_by_reservoir(
+                ds.as_ref(),
+                limit,
+                seed,
+                projection.as_deref(),
+                pred,
+                &progress,
+            )
+            .await?
         }
     };
+    progress.finish();
 
     let mut writer = make_stdout_writer(format, render);
     writer.start(&projected_schema)?;
@@ -101,6 +116,7 @@ async fn sample_by_reservoir(
     seed: Option<u64>,
     projection: Option<&[String]>,
     filter: &str,
+    progress: &ScanProgress,
 ) -> Result<Option<RecordBatch>> {
     if limit == 0 {
         return Ok(None);
@@ -110,7 +126,7 @@ async fn sample_by_reservoir(
         projection,
         filter: Some(filter),
     };
-    let mut stream = ds.scan(&options).await?;
+    let mut stream = progress.wrap(ds.scan(&options).await?);
 
     let cap = limit as usize;
     let mut rng = make_rng(seed);
@@ -164,14 +180,28 @@ mod tests {
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         // Matching (even) ids are [0, 2, 4, 6, 8].
-        let a = sample_by_reservoir(ds.as_ref(), 3, Some(42), None, "id % 2 = 0")
-            .await
-            .unwrap()
-            .unwrap();
-        let b = sample_by_reservoir(ds.as_ref(), 3, Some(42), None, "id % 2 = 0")
-            .await
-            .unwrap()
-            .unwrap();
+        let a = sample_by_reservoir(
+            ds.as_ref(),
+            3,
+            Some(42),
+            None,
+            "id % 2 = 0",
+            &ScanProgress::disabled(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let b = sample_by_reservoir(
+            ds.as_ref(),
+            3,
+            Some(42),
+            None,
+            "id % 2 = 0",
+            &ScanProgress::disabled(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let ids_a = collect_ids(std::slice::from_ref(&a));
         assert_eq!(ids_a, collect_ids(std::slice::from_ref(&b)), "reproducible");
         assert_eq!(ids_a.len(), 3);
@@ -189,10 +219,17 @@ mod tests {
         let path = write_int_fragments(tmp.path(), "ds", FRAGMENTS).await;
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
-        let out = sample_by_reservoir(ds.as_ref(), 5, Some(1), None, "id % 2 = 0")
-            .await
-            .unwrap()
-            .unwrap();
+        let out = sample_by_reservoir(
+            ds.as_ref(),
+            5,
+            Some(1),
+            None,
+            "id % 2 = 0",
+            &ScanProgress::disabled(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let mut ids = collect_ids(std::slice::from_ref(&out));
         ids.sort_unstable();
         assert_eq!(ids, vec![0, 2, 4, 6, 8]);
@@ -205,9 +242,16 @@ mod tests {
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         // Only one row matches, so a sample of 3 is impossible.
-        let err = sample_by_reservoir(ds.as_ref(), 3, Some(1), None, "id = 0")
-            .await
-            .unwrap_err();
+        let err = sample_by_reservoir(
+            ds.as_ref(),
+            3,
+            Some(1),
+            None,
+            "id = 0",
+            &ScanProgress::disabled(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(
             err,
             Error::SampleTooLarge {
@@ -224,9 +268,16 @@ mod tests {
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
 
         // Zero matches with a positive limit is "too large" (0 available rows).
-        let err = sample_by_reservoir(ds.as_ref(), 1, Some(1), None, "id > 100")
-            .await
-            .unwrap_err();
+        let err = sample_by_reservoir(
+            ds.as_ref(),
+            1,
+            Some(1),
+            None,
+            "id > 100",
+            &ScanProgress::disabled(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(
             err,
             Error::SampleTooLarge {

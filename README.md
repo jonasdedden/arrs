@@ -36,6 +36,28 @@ cargo install --path .
 cargo run --release -- <command> [args…]
 ```
 
+### Shell completions
+
+`arrs completions <shell>` prints a completion script to stdout for `bash`,
+`zsh`, `fish`, `powershell`, or `elvish`. Install it where your shell looks for
+completions:
+
+```sh
+# bash — into a bash-completion.d directory (or source it from ~/.bashrc):
+arrs completions bash | sudo tee /etc/bash_completion.d/arrs > /dev/null
+
+# zsh — into a directory on your $fpath (e.g. one you own), then restart zsh:
+arrs completions zsh > ~/.zfunc/_arrs   # ensure `fpath+=(~/.zfunc)` precedes `compinit`
+
+# fish:
+arrs completions fish > ~/.config/fish/completions/arrs.fish
+
+# PowerShell — write the script to a file, then dot-source that file from your
+# profile (regenerating overwrites the file, so it never duplicates):
+arrs completions powershell > $HOME\arrs.completion.ps1
+Add-Content $PROFILE '. $HOME\arrs.completion.ps1'   # run once
+```
+
 ## Commands
 
 | Command    | What it does                                                        |
@@ -59,6 +81,7 @@ cargo run --release -- <command> [args…]
 | `search`   | (Lance) Nearest-neighbor vector search; appends a `_distance` column.|
 | `diff`     | Diff two datasets (schema + rows), or two versions of one Lance dataset. |
 | `blob`     | Extract one cell's binary/blob payload to a file or stdout.          |
+| `completions` | Print a shell completion script (bash/zsh/fish/powershell/elvish) to stdout. |
 
 ## Remote datasets
 
@@ -108,6 +131,7 @@ denied) are surfaced with the offending URI and the underlying cause.
 | `--columns <a,b,…>`         | –       | Comma-separated include list. Supports glob patterns and nested paths (see below). User order is preserved. |
 | `--exclude-columns <a,b,…>` | –       | Comma-separated exclude list. Supports the same patterns/paths. Takes precedence over `--columns`.|
 | `--where <predicate>`       | –       | Keep only rows matching a SQL-style predicate. Supported by `cat`, `head`, `tail`, `rowcount`, `sample`, `stats`, `freq`. See below. |
+| `--no-progress`             | off     | Disable the scan progress indicator. It is drawn on **stderr** for long scans (`cat`, `stats`, `freq`, and filtered `head`/`tail`/`sample`) and only when stderr is a TTY, so stdout and piped output are never affected; this flag suppresses it unconditionally. |
 
 The output-control flags (`--max-list-items`, `--max-cell-width`,
 `--float-precision`) affect **rendering only**. Truncated or rounded output is
@@ -152,6 +176,10 @@ arrs head --float-precision 3 dataset.lance
 
 # Emit one streamed JSON array (for tools that can't read JSONL) and pipe to jq.
 arrs cat --format json dataset.lance | jq '.[].id'
+
+# Glob many partitions in one argument (quote it so the shell leaves it for
+# arrs to expand). Matches are concatenated in lexicographic order.
+arrs cat 'data/part_*.lance'
 
 # Inspect schemas.
 arrs schema dataset.lance                 # arrow (logical)

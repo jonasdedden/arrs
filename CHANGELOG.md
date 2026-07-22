@@ -117,6 +117,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bytes to a terminal, errors (non-zero exit) on null cells / out-of-range
   indices / non-binary columns, and never leaves a partial file on `-o` (temp
   file + atomic rename). Honours `--branch`/`--version`/`--tag`/`--as-of`. (#22)
+- `completions <shell>` command: prints a shell completion script (bash, zsh,
+  fish, powershell, elvish) to stdout, generated from the CLI definition via
+  `clap_complete`. Requires no dataset input and bypasses the format/output
+  machinery. See the README install section for per-shell installation. (#14)
+- Scan progress indicator on **stderr** for long scans (`cat`, `stats`, `freq`,
+  and the filtered `head`/`tail`/`sample` paths). Shown only when stderr is a
+  TTY and never on stdout, so piping is unaffected; a bar with an ETA when the
+  row total is known cheaply (no filter), otherwise a rows-scanned spinner. Opt
+  out with the global `--no-progress` flag. (#14)
+- `cat` expands glob patterns in its inputs (`data/part_*.lance`) when the shell
+  did not, matching `*`/`?`/`[` against local paths, concatenating matches in
+  lexicographic order, and erroring clearly on no match. A literal path that
+  exists is used as-is even if it contains glob metacharacters, and remote URIs
+  pass through untouched. (#14)
 
 ### Changed
 
@@ -131,3 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filter. (#6)
 - `indices` output now includes an index `type` column (`BTree`, `IVF_PQ`,
   `INVERTED`, …), sourced from Lance's index statistics. (#17)
+- Library API: `arrs::stats::compute` gained a `&ScanProgress` parameter (used
+  to drive the scan progress indicator). This is a breaking signature change for
+  direct library consumers — acceptable under 0.x, but noted here. CLI users are
+  unaffected. (#14)
