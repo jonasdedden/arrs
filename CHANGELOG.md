@@ -177,3 +177,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--with-row-id`/`--with-row-addr`). Command-specific flags and positionals stay
   in the default block. Applied uniformly across every command via clap
   `help_heading`/`next_help_heading`. (#47)
+- `arrs --help` now groups the subcommand list into labelled sections —
+  `Commands` (format-agnostic: `cat`/`head`/`tail`/`take`/`sample`/`rowcount`/
+  `stats`/`freq`/`schema`/`diff`/`blob`), `Lance commands`
+  (`stat`/`versions`/`branches`/`tags`/`indices`/`index-stats`/`fragments`/
+  `search`), and `Setup` (`completions`/`help`) — instead of one flat block.
+  Shell completions still include every command (they are generated from a
+  separate, un-hidden command tree), and `arrs help <cmd>` / `arrs <cmd> --help`
+  are unaffected. (#50)
