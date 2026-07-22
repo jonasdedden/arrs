@@ -152,14 +152,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `--help` now groups options into labelled sections instead of one flat list:
-  `Selection options` (`--columns`/`--exclude-columns`/`--where`), `Output
-  options` (`--format`/`--binary-format`/`--max-list-items`/`--max-cell-width`/
-  `--float-precision`/`--no-progress`), and `Lance options` (the
-  `--branch`/`--version`/`--tag`/`--as-of` selectors and
-  `--with-row-id`/`--with-row-addr`). Command-specific flags and positionals stay
-  in the default block. Applied uniformly across every command via clap
-  `help_heading`/`next_help_heading`. (#47)
 - Error exit code is now `2` (was `1`) for every command, so that exit code `1`
   is reserved for `diff` reporting that two versions differ (mirroring
   `diff(1)`). `0` still means success. (#19)
@@ -177,3 +169,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unaffected. (#14)
 - `ScanOptions` gained a `row_ids` field and `Dataset::take` a `row_ids`
   argument, both carrying the `--with-row-id`/`--with-row-addr` selection. (#21)
+- `--help` now groups options into labelled sections instead of one flat list:
+  `Selection options` (`--columns`/`--exclude-columns`/`--where`), `Output
+  options` (`--format`/`--binary-format`/`--max-list-items`/`--max-cell-width`/
+  `--float-precision`/`--no-progress`), and `Lance options` (the
+  `--branch`/`--version`/`--tag`/`--as-of` selectors and
+  `--with-row-id`/`--with-row-addr`). Command-specific flags and positionals stay
+  in the default block. Applied uniformly across every command via clap
+  `help_heading`/`next_help_heading`. (#47)
