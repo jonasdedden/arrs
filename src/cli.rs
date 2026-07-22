@@ -57,6 +57,7 @@ pub enum SchemaType {
 /// single version and are therefore mutually exclusive. With no flags set,
 /// the latest version of `main` is used.
 #[derive(Debug, Clone, Args, Default)]
+#[command(next_help_heading = "Lance options")]
 pub struct LanceArgs {
     /// Read from the named Lance branch (default: main).
     #[arg(long)]
@@ -93,6 +94,7 @@ impl LanceArgs {
 /// `rowcount`). Kept as its own flattened `Args` group so the flag definition
 /// lives in exactly one place.
 #[derive(Debug, Clone, Args, Default)]
+#[command(next_help_heading = "Selection options")]
 pub struct FilterArg {
     /// Keep only rows matching this SQL-style predicate (e.g.
     /// `"score > 0.5 AND split = 'test'"`). Applied before row selection, so
@@ -107,6 +109,7 @@ pub struct FilterArg {
 /// Kept as its own flattened `Args` group so the flag definitions live in one
 /// place.
 #[derive(Debug, Clone, Args, Default)]
+#[command(next_help_heading = "Lance options")]
 pub struct RowIdArgs {
     /// (Lance only) Append a `_rowid` column: the per-row identity. Stable
     /// across deletions; stable across compaction only for datasets written with
@@ -137,14 +140,42 @@ impl RowIdArgs {
 #[derive(Debug, Parser)]
 #[command(name = "arrs", about = "Inspect Arrow-based datasets.", version)]
 pub struct Cli {
+    // Global flags are grouped into `--help` sections via per-arg `help_heading`
+    // (see also the `next_help_heading` on the flattened LanceArgs/RowIdArgs/
+    // FilterArg structs). clap derives help-section *ordering* from the order in
+    // which each heading is first encountered while registering arguments, and it
+    // offers no API to reorder sections. Because a subcommand's own args
+    // (positionals, command-specific flags, and the flattened Lance/Selection
+    // structs) register before these propagated globals, the Lance section always
+    // renders at its flatten site. To keep the relative order of these globals
+    // stable and sensible, Selection is declared before Output here, and every
+    // Output flag is kept contiguous.
+    /// Comma-separated list of columns to include.
+    #[arg(
+        long,
+        global = true,
+        value_delimiter = ',',
+        help_heading = "Selection options"
+    )]
+    pub columns: Option<Vec<String>>,
+
+    /// Comma-separated list of columns to exclude. Takes precedence over --columns.
+    #[arg(
+        long = "exclude-columns",
+        global = true,
+        value_delimiter = ',',
+        help_heading = "Selection options"
+    )]
+    pub exclude_columns: Option<Vec<String>>,
+
     /// Output format for row-producing commands. When unset, metadata commands
     /// (versions/branches/tags/indices/fragments) default to `table` (fully buffered to enable
     /// column alignment); everything else to `jsonl` (streaming).
-    #[arg(long, global = true, value_enum)]
+    #[arg(long, global = true, value_enum, help_heading = "Output options")]
     pub format: Option<Format>,
 
     /// How to render binary columns in the output.
-    #[arg(long = "binary-format", global = true, value_enum, default_value_t = BinaryFormat::None)]
+    #[arg(long = "binary-format", global = true, value_enum, default_value_t = BinaryFormat::None, help_heading = "Output options")]
     pub binary_format: BinaryFormat,
 
     /// Truncate list / large-list / fixed-size-list rendering to the first N
@@ -152,7 +183,12 @@ pub struct Cli {
     /// jsonl/json output and to nested table cells, at every nesting level.
     /// Lossy: truncated output is for viewing, not round-tripping. Default:
     /// unlimited (current output preserved byte-for-byte).
-    #[arg(long = "max-list-items", global = true, value_name = "N")]
+    #[arg(
+        long = "max-list-items",
+        global = true,
+        value_name = "N",
+        help_heading = "Output options"
+    )]
     pub max_list_items: Option<usize>,
 
     /// Table format only: truncate each rendered *data* cell to at most N
@@ -160,27 +196,29 @@ pub struct Cli {
     /// are never truncated. Counts characters and never splits a multi-byte
     /// UTF-8 codepoint (CJK display width is out of scope). `N = 0` renders every
     /// non-empty cell as a bare `…`. Lossy. Default: unlimited.
-    #[arg(long = "max-cell-width", global = true, value_name = "N")]
+    #[arg(
+        long = "max-cell-width",
+        global = true,
+        value_name = "N",
+        help_heading = "Output options"
+    )]
     pub max_cell_width: Option<usize>,
 
     /// Render f16 / f32 / f64 values with exactly N fractional digits in every
     /// format (`NaN`/`Infinity` are unaffected). Uses `format!`-style
     /// round-half-to-even. Lossy. Default: full round-trip precision.
-    #[arg(long = "float-precision", global = true, value_name = "N")]
+    #[arg(
+        long = "float-precision",
+        global = true,
+        value_name = "N",
+        help_heading = "Output options"
+    )]
     pub float_precision: Option<usize>,
-
-    /// Comma-separated list of columns to include.
-    #[arg(long, global = true, value_delimiter = ',')]
-    pub columns: Option<Vec<String>>,
-
-    /// Comma-separated list of columns to exclude. Takes precedence over --columns.
-    #[arg(long = "exclude-columns", global = true, value_delimiter = ',')]
-    pub exclude_columns: Option<Vec<String>>,
 
     /// Disable the scan progress indicator on stderr. Progress is drawn only for
     /// long scans and only when stderr is a TTY, so it is already absent when
     /// output is piped; this flag suppresses it unconditionally.
-    #[arg(long = "no-progress", global = true)]
+    #[arg(long = "no-progress", global = true, help_heading = "Output options")]
     pub no_progress: bool,
 
     #[command(subcommand)]
