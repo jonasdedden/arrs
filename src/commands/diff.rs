@@ -60,8 +60,18 @@ pub async fn run(
     // each schema independently keeps every backend's strict-projection
     // behaviour: a scoped column absent on one side is a clear "unknown column"
     // error rather than a silent mismatch.
-    let left_proj = projection::resolve(&left_full, columns, exclude)?;
-    let right_proj = projection::resolve(&right_full, columns, exclude)?;
+    // Wrap resolution errors with the offending side's path: with two inputs a
+    // bare "unknown column 'x'" is ambiguous about which dataset rejected it.
+    let left_proj =
+        projection::resolve(&left_full, columns, exclude).map_err(|e| Error::DiffColumn {
+            path: left.to_string(),
+            error: Box::new(e),
+        })?;
+    let right_proj =
+        projection::resolve(&right_full, columns, exclude).map_err(|e| Error::DiffColumn {
+            path: right.to_string(),
+            error: Box::new(e),
+        })?;
     let left_schema = project_arrow_schema(left_full.as_ref(), left_proj.as_deref());
     let right_schema = project_arrow_schema(right_full.as_ref(), right_proj.as_deref());
 

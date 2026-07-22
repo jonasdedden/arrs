@@ -2160,6 +2160,13 @@ fn dsdiff_projection_absent_on_one_side_errors() {
     let out = run_bin(&["diff", &a, &b, "--columns", "extra"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty(), "stdout should be empty on error");
+    // The error must name which dataset rejected the column (left is resolved
+    // first, so it is the one reported) rather than a bare "unknown column".
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("in {a}:")) && stderr.contains("unknown column 'extra'"),
+        "error should name the dataset side: {stderr}"
+    );
 }
 
 #[test]

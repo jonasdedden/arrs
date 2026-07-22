@@ -165,6 +165,13 @@ pub enum Error {
     )]
     DiffMissingFromRef,
 
+    // Not a `#[source]`: the wrapped error is rendered inline so the single-line
+    // message names which of the two diff inputs rejected the projection (the
+    // field is deliberately named `error`, not `source`, to keep it out of the
+    // error chain and avoid a duplicate `caused by:` line).
+    #[error("in {path}: {error}")]
+    DiffColumn { path: String, error: Box<Error> },
+
     #[error("arrow error")]
     Arrow(#[from] arrow_schema::ArrowError),
 

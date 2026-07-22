@@ -314,21 +314,24 @@ pub enum Command {
     ///
     /// One verb, two modes, chosen by how many datasets you name:
     ///
-    ///   * DATASET-VS-DATASET — `arrs diff A B`: compares two *different*
-    ///     datasets (any backend) by schema, schema-metadata and row count.
-    ///     Being backend-generic, it takes no Lance version selectors: passing
-    ///     `--from`/`--to`/`--from-tag`/`--to-tag`/`--branch` alongside a second
-    ///     dataset is an error.
-    ///   * VERSION — `arrs diff DS --from <ref>`: compares two versions of one
-    ///     Lance dataset (row, schema, fragment, index and version-log deltas).
-    ///     Selected by giving a single dataset plus at least one of `--from` /
-    ///     `--from-tag`.
+    /// * DATASET-VS-DATASET (`arrs diff A B`): compares two different datasets
+    ///   (any backend) by schema, schema-metadata and row count. Being
+    ///   backend-generic, it takes no Lance version selectors; passing
+    ///   --from/--to/--from-tag/--to-tag/--branch alongside a second dataset is
+    ///   an error.
     ///
-    /// Exit codes follow `diff(1)`: `0` when the two sides are identical, `1`
-    /// when they differ, `2` on error. Human-readable summary by default; pass
-    /// `--format jsonl` for a single machine-readable JSON record. In
-    /// dataset-vs-dataset mode, `--columns`/`--exclude-columns` scope the
-    /// comparison to the projected columns.
+    /// * VERSION (`arrs diff DS --from <ref>`): compares two versions of one
+    ///   Lance dataset (row, schema, fragment, index and version-log deltas).
+    ///   Selected by giving a single dataset plus at least one of --from or
+    ///   --from-tag.
+    ///
+    /// Exit codes follow diff(1): 0 when the two sides are identical, 1 when
+    /// they differ, 2 on error.
+    ///
+    /// Human-readable summary by default; pass --format jsonl for a single
+    /// machine-readable JSON record. In dataset-vs-dataset mode,
+    /// --columns/--exclude-columns scope the comparison to the projected
+    /// columns.
     Diff {
         /// First dataset. In version mode, the single dataset to diff across
         /// versions.
