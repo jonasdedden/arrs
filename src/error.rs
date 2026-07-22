@@ -155,6 +155,23 @@ pub enum Error {
     )]
     DiffFormatUnsupported { format: &'static str },
 
+    #[error(
+        "diff cannot combine a second dataset with Lance version selectors (--from/--to/--from-tag/--to-tag/--branch): those select two versions of ONE dataset. Pass either two datasets, or one dataset with version selectors"
+    )]
+    DiffSelectorsInTwoDatasetMode,
+
+    #[error(
+        "diff needs either a second dataset (to compare two datasets) or --from/--from-tag (to compare two versions of one Lance dataset)"
+    )]
+    DiffMissingFromRef,
+
+    // Not a `#[source]`: the wrapped error is rendered inline so the single-line
+    // message names which of the two diff inputs rejected the projection (the
+    // field is deliberately named `error`, not `source`, to keep it out of the
+    // error chain and avoid a duplicate `caused by:` line).
+    #[error("in {path}: {error}")]
+    DiffColumn { path: String, error: Box<Error> },
+
     #[error("arrow error")]
     Arrow(#[from] arrow_schema::ArrowError),
 
