@@ -16,6 +16,7 @@ use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
 use arrs::cli::{BinaryFormat, Format};
+use arrs::commands::progress::ScanProgress;
 use arrs::dataset::{self, ColumnStats};
 use arrs::output::make_writer;
 use arrs::output::table::TableStyle;
@@ -41,7 +42,9 @@ fn col<'a>(stats: &'a [ColumnStats], name: &str) -> &'a ColumnStats {
 /// Compute stats for the dataset at `path` (all columns, no filter).
 async fn compute_all(path: &str) -> Vec<ColumnStats> {
     let ds = dataset::open(path, None).await.unwrap();
-    stats::compute(ds.as_ref(), None, None).await.unwrap()
+    stats::compute(ds.as_ref(), &ScanProgress::disabled(), None, None)
+        .await
+        .unwrap()
 }
 
 fn mixed_schema() -> SchemaRef {
@@ -313,29 +316,39 @@ fn projection_and_filter_respected() {
 
         // Projection: only `score`.
         let only_score = vec!["score".to_string()];
-        let stats = stats::compute(ds.as_ref(), Some(&only_score), None)
-            .await
-            .unwrap();
+        let stats = stats::compute(
+            ds.as_ref(),
+            &ScanProgress::disabled(),
+            Some(&only_score),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].column, "score");
 
         // Projection order (non-schema order) is preserved in the output rows.
         let reordered = vec!["score".to_string(), "id".to_string()];
-        let stats = stats::compute(ds.as_ref(), Some(&reordered), None)
-            .await
-            .unwrap();
+        let stats = stats::compute(
+            ds.as_ref(),
+            &ScanProgress::disabled(),
+            Some(&reordered),
+            None,
+        )
+        .await
+        .unwrap();
         let names: Vec<&str> = stats.iter().map(|s| s.column.as_str()).collect();
         assert_eq!(names, vec!["score", "id"]);
 
         // An unknown projected column is a caller error, not a panic.
         let bogus = vec!["nope".to_string()];
-        let err = stats::compute(ds.as_ref(), Some(&bogus), None)
+        let err = stats::compute(ds.as_ref(), &ScanProgress::disabled(), Some(&bogus), None)
             .await
             .unwrap_err();
         assert!(matches!(err, arrs::error::Error::UnknownColumn { .. }));
 
         // Filter: id > 2 keeps rows (3, 4, 5) → score values {30, null, 40}.
-        let stats = stats::compute(ds.as_ref(), None, Some("id > 2"))
+        let stats = stats::compute(ds.as_ref(), &ScanProgress::disabled(), None, Some("id > 2"))
             .await
             .unwrap();
         let id = col(&stats, "id");

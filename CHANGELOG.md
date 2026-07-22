@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `completions <shell>` command: prints a shell completion script (bash, zsh,
+  fish, powershell, elvish) to stdout, generated from the CLI definition via
+  `clap_complete`. Requires no dataset input and bypasses the format/output
+  machinery. See the README install section for per-shell installation. (#14)
+- Scan progress indicator on **stderr** for long scans (`cat`, `stats`, `freq`,
+  and the filtered `head`/`tail`/`sample` paths). Shown only when stderr is a
+  TTY and never on stdout, so piping is unaffected; a bar with an ETA when the
+  row total is known cheaply (no filter), otherwise a rows-scanned spinner. Opt
+  out with the global `--no-progress` flag. (#14)
+- `cat` expands glob patterns in its inputs (`data/part_*.lance`) when the shell
+  did not, matching `*`/`?`/`[` against local paths, concatenating matches in
+  lexicographic order, and erroring clearly on no match. A literal path that
+  exists is used as-is even if it contains glob metacharacters, and remote URIs
+  pass through untouched. (#14)
 - `--where <predicate>` SQL-style predicate filtering for `cat`, `head`, `tail`,
   `rowcount`, and `sample`. The filter is applied before row selection, and
   filtered `rowcount` uses the backend's native filtered count (pushed into

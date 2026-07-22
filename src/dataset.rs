@@ -357,7 +357,10 @@ pub fn detect_format(input: &str) -> Result<Format> {
 /// True when `input` starts with a URI scheme followed by `://`
 /// (e.g. `s3://bucket/…`, `file:///data/…`). A bare Windows drive letter such
 /// as `C:\data` has no `//` and is therefore correctly treated as a local path.
-fn has_scheme(input: &str) -> bool {
+///
+/// Exposed to the command layer so `cat`'s glob expansion can leave remote URIs
+/// untouched (globbing is local-filesystem only).
+pub(crate) fn has_scheme(input: &str) -> bool {
     let Some((scheme, _rest)) = input.split_once("://") else {
         return false;
     };

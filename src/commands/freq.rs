@@ -22,6 +22,7 @@ use futures::StreamExt;
 use crate::Result;
 use crate::cli::{Format, FreqSort, LanceArgs};
 use crate::commands::common::make_stdout_writer;
+use crate::commands::progress::ScanProgress;
 use crate::dataset::{self, Dataset, ScanOptions};
 use crate::error::Error;
 use crate::output::RenderOptions;
@@ -47,14 +48,27 @@ pub async fn run(
     render: RenderOptions,
     filter: Option<&str>,
     lance: &LanceArgs,
+    show_progress: bool,
 ) -> Result<()> {
     let ds = dataset::open(input, Some(lance)).await?;
+
+    // Progress: freq scans the whole (optionally filtered) column. Without a
+    // filter the row total is a cheap metadata `count_rows`, so show a bar with
+    // an ETA; with a filter the surviving-row total is unknown, so use a
+    // rows-scanned spinner.
+    let total = if show_progress && filter.is_none() {
+        Some(ds.count_rows(None).await?)
+    } else {
+        None
+    };
+    let progress = ScanProgress::new(show_progress, total);
 
     // Compute the full table before touching stdout: validation, an invalid
     // `--where`, or the cardinality guard must fail before the writer emits a
     // header (mirrors the other buffered commands' stdout hygiene).
     let batch = compute(
         ds.as_ref(),
+        &progress,
         column,
         limit,
         sort,
@@ -63,6 +77,7 @@ pub async fn run(
         MAX_DISTINCT,
     )
     .await?;
+    progress.finish();
 
     let mut writer = make_stdout_writer(format, render);
     writer.start(&batch.schema())?;
@@ -77,6 +92,7 @@ pub async fn run(
 #[allow(clippy::too_many_arguments)]
 async fn compute(
     ds: &dyn Dataset,
+    progress: &ScanProgress,
     column: &str,
     limit: Option<u64>,
     sort: FreqSort,
@@ -101,7 +117,7 @@ async fn compute(
     // (numeric / lexical) order rather than its rendered string.
     let ordering = OrderMode::of(field.data_type());
 
-    let counts = accumulate(ds, column, filter, render, max_distinct).await?;
+    let counts = accumulate(ds, progress, column, filter, render, max_distinct).await?;
     build_batch(counts, sort, limit, ordering)
 }
 
@@ -118,6 +134,7 @@ struct Counts {
 /// Stream the single projected column and tally occurrences.
 async fn accumulate(
     ds: &dyn Dataset,
+    progress: &ScanProgress,
     column: &str,
     filter: Option<&str>,
     render: RenderOptions,
@@ -128,7 +145,7 @@ async fn accumulate(
         projection: Some(&projection),
         filter,
     };
-    let mut stream = ds.scan(&options).await?;
+    let mut stream = progress.wrap(ds.scan(&options).await?);
 
     let mut present: HashMap<String, u64> = HashMap::new();
     let mut null: u64 = 0;
@@ -534,6 +551,7 @@ mod tests {
         let ds = open_labels(tmp.path()).await;
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             None,
             FreqSort::Count,
@@ -560,6 +578,7 @@ mod tests {
         let ds = open_labels(tmp.path()).await;
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             None,
             FreqSort::Value,
@@ -587,6 +606,7 @@ mod tests {
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             None,
             FreqSort::Count,
@@ -606,6 +626,7 @@ mod tests {
         let ds = open_labels(tmp.path()).await;
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             Some(2),
             FreqSort::Count,
@@ -633,6 +654,7 @@ mod tests {
         // 4 distinct rows (incl. NULL); a limit of 4 shows all, none folded.
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             Some(4),
             FreqSort::Count,
@@ -654,6 +676,7 @@ mod tests {
         // Only the 4 "spam" rows survive the filter.
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             None,
             FreqSort::Count,
@@ -676,6 +699,7 @@ mod tests {
         // A filter that matches nothing gives an empty result set.
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             None,
             FreqSort::Count,
@@ -696,6 +720,7 @@ mod tests {
         let ds = open_labels(tmp.path()).await;
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             None,
             FreqSort::Count,
@@ -731,6 +756,7 @@ mod tests {
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "id",
             None,
             FreqSort::Count,
@@ -772,6 +798,7 @@ mod tests {
 
         let err = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "tags",
             None,
             FreqSort::Count,
@@ -807,6 +834,7 @@ mod tests {
 
         let err = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "data",
             None,
             FreqSort::Count,
@@ -825,6 +853,7 @@ mod tests {
         let ds = open_labels(tmp.path()).await;
         let err = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "nope",
             None,
             FreqSort::Count,
@@ -846,6 +875,7 @@ mod tests {
         let ds = dataset::open(path.to_str().unwrap(), None).await.unwrap();
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "id",
             None,
             FreqSort::Value,
@@ -880,6 +910,7 @@ mod tests {
 
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "x",
             None,
             FreqSort::Value,
@@ -903,6 +934,7 @@ mod tests {
         let ds = open_labels(tmp.path()).await;
         let err = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             None,
             FreqSort::Count,
@@ -923,6 +955,7 @@ mod tests {
         let ds = open_labels(tmp.path()).await;
         let batch = compute(
             ds.as_ref(),
+            &ScanProgress::disabled(),
             "label",
             None,
             FreqSort::Count,

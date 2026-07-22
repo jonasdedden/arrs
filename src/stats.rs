@@ -41,6 +41,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use futures::StreamExt as _;
 
 use crate::Result;
+use crate::commands::progress::ScanProgress;
 use crate::dataset::{ColumnStats, Dataset, ScanOptions};
 use crate::error::Error;
 use crate::output::RenderOptions;
@@ -59,6 +60,7 @@ pub const DISTINCT_CAP: usize = 10_000;
 /// returns `None` (the default) this falls back to a streaming scan fold.
 pub async fn compute(
     ds: &dyn Dataset,
+    progress: &ScanProgress,
     projection: Option<&[String]>,
     filter: Option<&str>,
 ) -> Result<Vec<ColumnStats>> {
@@ -78,7 +80,7 @@ pub async fn compute(
         .map(|f| Accumulator::new(f.name().clone(), f.data_type().clone()))
         .collect();
 
-    let mut stream = ds.scan(&options).await?;
+    let mut stream = progress.wrap(ds.scan(&options).await?);
     while let Some(batch) = stream.next().await {
         let batch = batch?;
         // Accumulators are indexed positionally, so the scan must yield columns

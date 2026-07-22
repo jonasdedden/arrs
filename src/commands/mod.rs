@@ -1,17 +1,21 @@
 mod blob;
 mod cat;
 mod common;
+mod completions;
 mod diff;
 mod diff_common;
 mod freq;
 mod head;
 mod lance;
+pub mod progress;
 mod rowcount;
 mod sample;
 mod schema;
 mod stats;
 mod tail;
 mod take;
+
+use std::io::IsTerminal;
 
 use crate::Result;
 use crate::cli::{Cli, Command, Format};
@@ -30,6 +34,13 @@ pub enum Outcome {
 }
 
 pub async fn dispatch(cli: Cli) -> Result<Outcome> {
+    // `completions` takes no dataset input and bypasses the format/output
+    // machinery: intercept it before any of that runs and exit 0.
+    if let Command::Completions { shell } = cli.command {
+        completions::run(shell);
+        return Ok(Outcome::Success);
+    }
+
     let columns = cli.columns.as_deref();
     let exclude = cli.exclude_columns.as_deref();
     let render = RenderOptions {
@@ -38,6 +49,10 @@ pub async fn dispatch(cli: Cli) -> Result<Outcome> {
         max_cell_width: cli.max_cell_width,
         float_precision: cli.float_precision,
     };
+    // The scan progress indicator is opt-out and TTY-gated: never drawn when
+    // `--no-progress` is set or when stderr is redirected/piped. Folding both
+    // into one flag here keeps every command's own logic to "bar vs spinner".
+    let show_progress = !cli.no_progress && std::io::stderr().is_terminal();
     if let Some(name) = command_ignoring_format(&cli.command)
         && cli.format.is_some()
     {
@@ -93,7 +108,15 @@ pub async fn dispatch(cli: Cli) -> Result<Outcome> {
         return lance::diff::run(&input, selectors, explicit_format).await;
     }
     let format = resolve_format(explicit_format, &cli.command);
-    run_command(cli.command, format, render, columns, exclude).await?;
+    run_command(
+        cli.command,
+        format,
+        render,
+        columns,
+        exclude,
+        show_progress,
+    )
+    .await?;
     Ok(Outcome::Success)
 }
 
@@ -103,6 +126,7 @@ async fn run_command(
     render: RenderOptions,
     columns: Option<&[String]>,
     exclude: Option<&[String]>,
+    show_progress: bool,
 ) -> Result<()> {
     match command {
         Command::Cat {
@@ -118,6 +142,7 @@ async fn run_command(
                 exclude,
                 filter.predicate.as_deref(),
                 &lance,
+                show_progress,
             )
             .await
         }
@@ -136,6 +161,7 @@ async fn run_command(
                 exclude,
                 filter.predicate.as_deref(),
                 &lance,
+                show_progress,
             )
             .await
         }
@@ -154,6 +180,7 @@ async fn run_command(
                 exclude,
                 filter.predicate.as_deref(),
                 &lance,
+                show_progress,
             )
             .await
         }
@@ -211,6 +238,7 @@ async fn run_command(
                 exclude,
                 filter.predicate.as_deref(),
                 &lance,
+                show_progress,
             )
             .await
         }
@@ -231,6 +259,7 @@ async fn run_command(
                 render,
                 filter.predicate.as_deref(),
                 &lance,
+                show_progress,
             )
             .await
         }
@@ -250,6 +279,7 @@ async fn run_command(
                 exclude,
                 filter.predicate.as_deref(),
                 &lance,
+                show_progress,
             )
             .await
         }
@@ -313,6 +343,9 @@ async fn run_command(
         // `diff` is intercepted in `dispatch` (distinct format + exit-code
         // handling) and never reaches this shared row-format path.
         Command::Diff { .. } => unreachable!("diff is dispatched separately"),
+        // `completions` is intercepted at the top of `dispatch` (no dataset
+        // input, no format machinery) and never reaches here.
+        Command::Completions { .. } => unreachable!("completions is dispatched separately"),
     }
 }
 
