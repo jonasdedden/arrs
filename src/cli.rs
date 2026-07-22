@@ -14,6 +14,15 @@ pub enum Format {
     /// A single well-formed JSON array (`[obj, obj, …]`), streamed with constant
     /// memory. For consumers that can't read JSONL. Empty input yields `[]`.
     Json,
+    /// Arrow IPC streaming format written to stdout, for lossless composition
+    /// with the Arrow ecosystem (DuckDB, Polars, pyarrow, ADBC). Batches go
+    /// straight from the scan to `arrow::ipc::writer::StreamWriter`, so output is
+    /// fully streaming at constant memory. Only valid on the row-producing
+    /// commands (`cat`/`head`/`tail`/`take`/`sample`); the value-rendering flags
+    /// (`--binary-format`, `--max-list-items`, `--max-cell-width`,
+    /// `--float-precision`) do not apply to it and are rejected. arrs refuses to
+    /// write it to a terminal — redirect or pipe it.
+    Ipc,
 }
 
 /// How to render Binary / LargeBinary / FixedSizeBinary / BinaryView values.

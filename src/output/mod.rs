@@ -1,11 +1,14 @@
-//! Output writers: CSV, JSONL, and table.
+//! Output writers: CSV, JSONL, table, and Arrow IPC.
 //!
 //! Each writer consumes `RecordBatch`es whose schema has already been projected
-//! by the caller. Type formatting rules live in `value`. The factory
-//! `make_writer` dispatches `Format` → concrete writer; CLI-side stdout
-//! convenience lives in `commands::common::make_stdout_writer`.
+//! by the caller. Type formatting rules live in `value` — except `ipc`, which
+//! bypasses `value` entirely and streams batches straight to an Arrow IPC
+//! `StreamWriter`. The factory `make_writer` dispatches `Format` → concrete
+//! writer; CLI-side stdout convenience lives in
+//! `commands::common::make_stdout_writer`.
 
 pub mod csv;
+pub mod ipc;
 pub mod json;
 pub mod jsonl;
 pub mod table;
@@ -86,5 +89,9 @@ pub fn make_writer<'w, W: Write + 'w, R: Into<RenderOptions>>(
         Format::Jsonl => Box::new(jsonl::JsonlRowWriter::new(out, render)),
         Format::Json => Box::new(json::JsonRowWriter::new(out, render)),
         Format::Table => Box::new(table::TableRowWriter::new(out, render, table_style)),
+        // IPC is lossless and bypasses `value`, so it ignores both `render` and
+        // `table_style`. The command layer rejects the value-rendering flags for
+        // this format before we get here, so nothing is silently dropped.
+        Format::Ipc => Box::new(ipc::IpcRowWriter::new(out)),
     }
 }

@@ -51,6 +51,7 @@ pub async fn run(input: &str, sel: DiffSelectors, format: Option<Format>) -> Res
         Some(Format::Csv) => return Err(Error::DiffFormatUnsupported { format: "csv" }),
         Some(Format::Table) => return Err(Error::DiffFormatUnsupported { format: "table" }),
         Some(Format::Json) => return Err(Error::DiffFormatUnsupported { format: "json" }),
+        Some(Format::Ipc) => return Err(Error::DiffFormatUnsupported { format: "ipc" }),
     };
 
     // Open the "from" endpoint first so its resolved branch can seed the
