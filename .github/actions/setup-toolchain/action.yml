@@ -54,6 +54,6 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
     - if: ${{ inputs.python == 'true' }}
-      uses: astral-sh/setup-uv@v10
+      uses: astral-sh/setup-uv@v10.0.1
       with:
         enable-cache: true
