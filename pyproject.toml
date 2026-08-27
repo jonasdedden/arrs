@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
     "Topic :: Utilities",
 ]
-dynamic = ["version"]
+dynamic = ["version", "description"]
 
 [tool.maturin]
 bindings = "bin"
