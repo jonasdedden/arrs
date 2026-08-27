@@ -99,10 +99,12 @@ Value counts for one column: one row per distinct value with its `count` and
 $ arrs freq --column label dataset.lance
 +-------+-------+---------+
 | value | count | percent |
-+-------+-------+---------+
-| spam  | 91234 | 45.6%   |
-| ham   | 88765 | 44.4%   |
-| NULL  | 20001 | 10.0%   |
++=========================+
+| ham   | 90    | 45.0%   |
+|-------+-------+---------|
+| spam  | 90    | 45.0%   |
+|-------+-------+---------|
+| NULL  | 20    | 10.0%   |
 +-------+-------+---------+
 ```
 

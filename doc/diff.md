@@ -84,6 +84,25 @@ arrs diff dataset.lance --branch dev --from 2 --to 5
 | `--to-tag <name>` | Right-hand endpoint by tag. |
 | `--branch <name>` | Scope both endpoints to this branch. Default `main`. |
 
+```
+$ arrs diff dataset.lance --from 1
+diff dataset.lance
+  from  main v1
+  to    main v2
+
+Rows: 160 -> 200  (net +40; +40 added, -0 deleted)
+
+Schema changes: none
+
+Fragments: +1 added, -0 removed, 0 rewritten
+  added:     [1]
+
+Index changes: none
+
+Versions in range (v1, v2]:
+  v2  2026-08-27T15:55:37Z
+```
+
 It reports:
 
 - Row delta: live row count at each version and the net change, split into rows

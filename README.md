@@ -76,29 +76,75 @@ a silent no-op.
 
 ## Examples
 
+The dataset below has 200 rows and five columns, one of them a 1536-dimensional
+embedding.
+
 ```sh
-# Last 3 rows as CSV, without a noisy column.
-arrs tail -n 3 --format csv --exclude-columns raw_tokens dataset.lance
+$ arrs rowcount dataset.lance
+200
 
-# Reproducible random sample.
-arrs sample -n 100 --seed 42 dataset.lance
+$ arrs head -n 3 --columns id,label,score dataset.lance
+{"id":1,"label":"ham","score":0.568}
+{"id":2,"label":"spam","score":0.225}
+{"id":3,"label":"ham","score":0.413}
 
-# Class balance of a label column.
-arrs freq --column label dataset.lance
+$ arrs tail -n 3 --format csv --exclude-columns emb dataset.lance
+id,label,score,split
+198,spam,0.93,test
+199,ham,0.009,test
+200,,0.532,test
 
-# Show only the first 4 elements of each embedding.
-arrs head --max-list-items 4 dataset.lance
-# {"id":1,"emb":[0.12,0.98,0.33,0.41,"… (1532 more)"]}
+$ arrs head -n 2 --where "split = 'test' AND score > 0.9" --columns id,score dataset.lance
+{"id":165,"score":0.943}
+{"id":176,"score":0.983}
+```
 
-# Concatenate partitions matching a glob (quote it, arrs expands it).
-arrs cat --columns id,score 'data/part_*.lance'
+Trim a wide embedding column instead of flooding the terminal:
 
-# Read an older version.
-arrs head -n 5 --as-of 2026-07-01 dataset.lance
+```sh
+$ arrs head -n 1 --columns id,emb --max-list-items 4 --float-precision 2 dataset.lance
+{"id":1,"emb":[-0.78,-0.76,0.17,0.74,"… (1532 more)"]}
+```
 
-# Pipe a lossless Arrow stream into DuckDB.
-arrs cat --where "score > 0.9" dataset.lance --format ipc \
-  | duckdb -c "SELECT count(*) FROM read_arrow('/dev/stdin')"
+Check the class balance of a label:
+
+```sh
+$ arrs freq --column label dataset.lance
++-------+-------+---------+
+| value | count | percent |
++=========================+
+| ham   | 90    | 45.0%   |
+|-------+-------+---------|
+| spam  | 90    | 45.0%   |
+|-------+-------+---------|
+| NULL  | 20    | 10.0%   |
++-------+-------+---------+
+```
+
+Summarize a column:
+
+```sh
+$ arrs stats --columns score --float-precision 3 dataset.lance
++--------+---------+-------+-------+-------+-------+-------+--------+----------+
+| column | type    | count | nulls | min   | max   | mean  | stddev | distinct |
++==============================================================================+
+| score  | Float64 | 200   | 0     | 0.002 | 0.987 | 0.502 | 0.288  | 180      |
++--------+---------+-------+-------+-------+-------+-------+--------+----------+
+```
+
+Read an earlier version of the same dataset, here before the test split was
+appended:
+
+```sh
+$ arrs rowcount --version 1 dataset.lance
+160
+```
+
+Pipe a lossless Arrow stream into another tool:
+
+```sh
+$ arrs cat --where "score > 0.9" dataset.lance --format ipc \
+    | duckdb -c "SELECT count(*) FROM read_arrow('/dev/stdin')"
 ```
 
 ## Documentation
