@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-27
+
+### Changed
+
+- Rewrote the README. It is now a short overview — install, command tables,
+  global flags, and worked examples with real output — with the reference
+  material moved into `doc/`: install and shell completions, a per-command
+  reference, columns and filters, output formats, Lance versions and row
+  identity, diffing, and remote object stores. Links are absolute so they
+  resolve on both crates.io and PyPI.
+- Updated the GitHub Actions used by CI and the release workflow:
+  `actions/checkout` v7, `actions/download-artifact` v8, `actions/setup-python`
+  v7, and `astral-sh/setup-uv` pinned to v10.0.1 (upstream publishes no `v10`
+  major alias).
+
+### Fixed
+
+- The PyPI project page had no summary, showing "None" in search results.
+  `description` is now declared dynamic in `pyproject.toml`, so maturin takes
+  the `Summary` metadata field from `Cargo.toml` instead of omitting it.
+- The release workflow could report success without publishing anything. It now
+  verifies up front that the tag matches the `Cargo.toml` version and that the
+  CHANGELOG has a matching section, no longer passes `skip-existing` to the
+  PyPI upload (which turned "published nothing" into a green check), and
+  asserts after each publish that the version is actually live on the registry.
+
 ## [0.2.0] - 2026-07-22
 
 ### Added
