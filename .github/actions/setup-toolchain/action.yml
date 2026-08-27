@@ -50,10 +50,10 @@ runs:
         shared-key: ${{ inputs.cache-key }}
 
     - if: ${{ inputs.python == 'true' }}
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@v7
       with:
         python-version: ${{ inputs.python-version }}
     - if: ${{ inputs.python == 'true' }}
-      uses: astral-sh/setup-uv@v7
+      uses: astral-sh/setup-uv@v10.0.1
       with:
         enable-cache: true

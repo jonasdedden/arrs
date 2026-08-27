@@ -24,7 +24,7 @@ jobs:
     name: rust · fmt + clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-toolchain
         with:
           cache-key: rust-clippy
@@ -38,7 +38,7 @@ jobs:
     name: rust · cargo test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-toolchain
         with:
           cache-key: rust-test
@@ -80,7 +80,7 @@ jobs:
       # future-proofing so lowered opt-level can never drag debug info in.
       CARGO_PROFILE_RELEASE_DEBUG: "0"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-toolchain
         with:
           cache-key: wheel-${{ matrix.os }}
